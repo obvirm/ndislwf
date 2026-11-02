@@ -1,0 +1,24 @@
+# internal notes, not published to the repo
+docs/
+src/vbbridge/
+
+# build artifacts
+x64/
+*.sys
+*.cat
+*.pdb
+*.obj
+*.err
+*.rc_ignored
+ipch/
+.vs/
+
+# third-party reference clones (not our code)
+re/
+
+# deployment scratch (test-VM payloads)
+pkg/
+
+# abandoned Rust-driver scaffold
+driver/
+inf/
