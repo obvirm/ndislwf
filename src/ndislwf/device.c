@@ -269,6 +269,8 @@ FilterDeviceIoControl(
                 NdisZeroMemory(a, sizeof(VB_ADAPTER));
                 a->Index = idx;
                 a->Flags = (pF->State == FilterRunning) ? VB_FLAG_RUNNING : 0;
+                a->Medium = pF->VbMedium;
+                NdisMoveMemory(a->Mac, pF->VbMac, 6);
 
                 cch = pF->FilterModuleName.Length / sizeof(WCHAR);
                 if (cch > VB_IFNAME_MAX - 1) { cch = VB_IFNAME_MAX - 1; }

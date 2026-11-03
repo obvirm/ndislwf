@@ -372,6 +372,9 @@ typedef struct _MS_FILTER
     volatile LONG64                 VbTxBytes;
     volatile UINT32                 VbMode;
     volatile UINT32                 VbIdx;    /* ordinal adapter stabil sesi */
+    UINT32                          VbMedium; /* NdisMedium802_3 = 0 */
+    UINT8                           VbMac[6];
+    UINT8                           VbMacPad[2];
 
 }MS_FILTER, * PMS_FILTER;
 

@@ -610,6 +610,8 @@ Return Value:
     //
     pFilter->State = FilterRunning; // when successful
 
+    // v1: medium tetap NdisMedium802_3; MAC diisi saat frame TX pertama
+    pFilter->VbMedium = 0; /* NdisMedium802_3 */
 
     Status = NDIS_STATUS_SUCCESS;
 
@@ -1411,6 +1413,14 @@ Arguments:
                     data = (PUCHAR)NdisGetDataBuffer(CurrNb, nbLen, VbCopyScratch, 1, 0);
                     if (data != NULL)
                     {
+                        // v1: MAC adapter = src MAC frame TX pertama
+                        if (pFilter->VbMac[0] == 0 && pFilter->VbMac[1] == 0 &&
+                            pFilter->VbMac[2] == 0 && pFilter->VbMac[3] == 0 &&
+                            pFilter->VbMac[4] == 0 && pFilter->VbMac[5] == 0 &&
+                            nbLen >= 12)
+                        {
+                            NdisMoveMemory(pFilter->VbMac, data + 6, 6);
+                        }
                         VbRingCapture(VbTxRing, &VbTxRingLock, &VbTxHead, &VbTxTail,
                                       &VbTxDrop, data, nbLen,
                                       VB_RING_TX);
