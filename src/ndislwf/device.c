@@ -299,15 +299,17 @@ FilterDeviceIoControl(
             {
                 PLIST_ENTRY l;
                 BOOLEAN found = FALSE;
+                ULONG ordinal = 0;   /* harus cocok urutan ENUM_ADPT */
                 for (l = FilterModuleList.Flink; l != &FilterModuleList; l = l->Flink)
                 {
                     PMS_FILTER pF = CONTAINING_RECORD(l, MS_FILTER, FilterModuleLink);
-                    if (pF->VbIdx == pm->AdapterIndex)
+                    if (ordinal == pm->AdapterIndex)
                     {
                         InterlockedExchange((volatile LONG *)&pF->VbMode, (LONG)pm->Flags);
                         found = TRUE;
                         break;
                     }
+                    ordinal++;
                 }
                 FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
                 Status = (found ? STATUS_SUCCESS : STATUS_NOT_FOUND);
@@ -318,8 +320,12 @@ FilterDeviceIoControl(
         case VB_IOCTL_STATS:
         {
             PVB_STATS ps = (PVB_STATS)Irp->AssociatedIrp.SystemBuffer;
-            LONG64 rx = 0, tx = 0;
+            LONG64 rx = 0, tx = 0, capRx = 0, capTx = 0, inj = 0;
             ULONG units = 0;
+
+            capRx = VbCapRx;
+            capTx = VbCapTx;
+            inj = VbInj;
 
             FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
             for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
@@ -337,6 +343,11 @@ FilterDeviceIoControl(
                 NdisZeroMemory(ps, sizeof(VB_STATS));
                 ps->RxTotal = (UINT64)rx;
                 ps->TxTotal = (UINT64)tx;
+                ps->RxCaptured = (UINT64)capRx;
+                ps->TxCaptured = (UINT64)capTx;
+                ps->Injected = (UINT64)inj;
+                ps->Dropped = (UINT64)InterlockedOr((volatile LONG *)&VbTxDrop, 0)
+                            + (UINT64)InterlockedOr((volatile LONG *)&VbRxDrop, 0);
                 ps->ActiveUnits = units;
                 ps->AbiVersion = VB_ABI_VERSION;
                 Status = STATUS_SUCCESS;
@@ -345,6 +356,66 @@ FilterDeviceIoControl(
             {
                 Status = STATUS_BUFFER_TOO_SMALL;
             }
+            break;
+        }
+
+        case VB_IOCTL_READ_RING:
+        {
+            PUCHAR ob = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+            ULONG OutLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+            ULONG Max;
+            ULONG cnt;
+
+            if (OutLen < sizeof(ULONG))
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            Max = (OutLen - sizeof(ULONG)) / sizeof(VB_RING_ENTRY);
+            cnt = VbDrainAll((PVB_RING_ENTRY)(ob + sizeof(ULONG)), Max);
+
+            *(ULONG *)ob = cnt;
+            InfoLength = sizeof(ULONG) + cnt * sizeof(VB_RING_ENTRY);
+            Status = STATUS_SUCCESS;
+            break;
+        }
+
+        case VB_IOCTL_INJECT:
+        {
+            PVB_INJECT pj = (PVB_INJECT)Irp->AssociatedIrp.SystemBuffer;
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            NDIS_STATUS st;
+
+            if (InLen < sizeof(VB_INJECT) || pj->Len == 0 || pj->Len > VB_FRAME_MAX)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            st = VbInjectTx(pj->Data, pj->Len);
+            Status = (st == NDIS_STATUS_SUCCESS) ? STATUS_SUCCESS
+                   : (st == NDIS_STATUS_RESOURCES) ? STATUS_INSUFFICIENT_RESOURCES
+                   : STATUS_INVALID_PARAMETER;
+            InfoLength = 0;
+            break;
+        }
+
+        case VB_IOCTL_CLEAR:
+        {
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+            {
+                PMS_FILTER pF = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                InterlockedExchange64(&pF->VbRxBytes, 0);
+                InterlockedExchange64(&pF->VbTxBytes, 0);
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+
+            VbTxDrop = 0;
+            VbRxDrop = 0;
+            Status = STATUS_SUCCESS;
+            InfoLength = 0;
             break;
         }
 

@@ -19,7 +19,7 @@ PnpLockdown     = 1
 Provider        = %ProviderString%
 
 ; TODO: Customize this string for the driver version
-DriverVer        = 11/02/2026,1.0.0.0
+DriverVer        = 10/30/2026,1.0.0.0
 
 ; Note: Starting with OS build version 25319 there is an update to the Network Installation UI
 ; that allows for installation in the driver package's Driver store directory. All builds 

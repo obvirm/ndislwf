@@ -51,6 +51,36 @@ extern PDEVICE_OBJECT      NdisDeviceObject;
 
 extern FILTER_LOCK         FilterListLock;
 extern LIST_ENTRY          FilterModuleList;
+
+/* v1: ring capture/inject (filter.c) */
+VOID        VbRingInit(VOID);
+VOID        VbRingUninit(VOID);
+VOID        VbInjectInit(VOID);
+VOID        VbInjectUninit(VOID);
+BOOLEAN     VbInjectComplete(PNET_BUFFER_LIST Nbl);
+NDIS_STATUS VbInjectTx(PUCHAR Data, ULONG Len);
+ULONG       VbDrainAll(PVB_RING_ENTRY Out, ULONG Max);
+VOID        VbRingCapture(VB_RING_ENTRY* Ring,
+                          PKSPIN_LOCK Lock,
+                          volatile LONG* Head,
+                          volatile LONG* Tail,
+                          volatile ULONG* Drop,
+                          PUCHAR Data,
+                          ULONG Len,
+                          ULONG Flags);
+ULONG       VbRingDrain(VB_RING_ENTRY* Ring,
+                         PKSPIN_LOCK Lock,
+                         volatile LONG* Head,
+                         volatile LONG* Tail,
+                         PVB_RING_ENTRY Out,
+                         ULONG Max);
+
+extern volatile ULONG      VbTxDrop;
+extern volatile ULONG      VbRxDrop;
+extern volatile LONG64     VbCapTx;
+extern volatile LONG64     VbCapRx;
+extern volatile LONG64     VbInj;
+
 extern LONG                VbInstanceCounter;
 
 

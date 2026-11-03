@@ -98,6 +98,8 @@ typedef struct _FILTER_WRITE_CONFIG
 #define VB_IOCTL_ENUM_ADPT  VB_CODE(0x801)
 #define VB_IOCTL_SET_MODE   VB_CODE(0x802)
 #define VB_IOCTL_STATS      VB_CODE(0x803)
+#define VB_IOCTL_READ_RING  VB_CODE(0x804)
+#define VB_IOCTL_INJECT     VB_CODE(0x805)
 #define VB_IOCTL_CLEAR      VB_CODE(0x806)
 
 #define VB_ABI_MAGIC   0x31504256u   /* 'VBP1' */
@@ -130,6 +132,26 @@ typedef struct _VB_MODE {
     ULONG   Flags;         /* VB_MODE_RX | VB_MODE_TX */
 } VB_MODE, *PVB_MODE;
 
+
+/* ----------------------------------------------------------------
+ * Ring capture/inject v1
+ * ---------------------------------------------------------------- */
+#define VB_FRAME_MAX        1514
+#define VB_RING_ENTRIES     1024
+#define VB_RING_TX          0x1
+#define VB_RING_RX          0x2
+
+typedef struct _VB_RING_ENTRY {
+    ULONG   Len;            /* byte efektif di Data */
+    ULONG   Flags;          /* VB_RING_TX dari TX path, VB_RING_RX dari RX path */
+    UCHAR   Data[VB_FRAME_MAX];
+} VB_RING_ENTRY, *PVB_RING_ENTRY;
+
+typedef struct _VB_INJECT {
+    ULONG   Len;
+    ULONG   Reserved;
+    UCHAR   Data[VB_FRAME_MAX];
+} VB_INJECT, *PVB_INJECT;
 typedef struct _VB_STATS {
     ULONG64 RxTotal;
     ULONG64 TxTotal;

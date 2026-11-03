@@ -32,6 +32,20 @@ PDEVICE_OBJECT      NdisDeviceObject = NULL;
 
 FILTER_LOCK         FilterListLock;
 LIST_ENTRY          FilterModuleList;
+static UCHAR VbCopyScratch[VB_FRAME_MAX];
+static VB_RING_ENTRY* VbTxRing;
+static VB_RING_ENTRY* VbRxRing;
+static KSPIN_LOCK     VbTxRingLock;
+static KSPIN_LOCK     VbRxRingLock;
+static volatile LONG  VbTxHead;
+static volatile LONG  VbTxTail;
+static volatile LONG  VbRxHead;
+static volatile LONG  VbRxTail;
+volatile ULONG     VbTxDrop;
+volatile ULONG     VbRxDrop;
+volatile LONG64    VbCapTx;
+volatile LONG64    VbCapRx;
+volatile LONG64    VbInj;
 
 LONG                VbInstanceCounter = -1;  /* ordinal adapter */
 
@@ -153,6 +167,8 @@ Return Value:
             DEBUGP(DL_WARN, "Register filter driver failed.\n");
             break;
         }
+        VbRingInit();
+        VbInjectInit();
 
         Status = FilterRegisterDevice();
 
@@ -711,6 +727,8 @@ Return Value:
     // Should free the filter context list
     //
     FilterDeregisterDevice();
+    VbInjectUninit();
+    VbRingUninit();
     NdisFDeregisterFilterDriver(FilterDriverHandle);
 
 #if DBG
@@ -1241,7 +1259,40 @@ Return Value:
     // Send complete the NBLs.  If you removed any NBLs from the chain, make
     // sure the chain isn't empty (i.e., NetBufferLists!=NULL).
 
-    NdisFSendNetBufferListsComplete(pFilter->FilterHandle, NetBufferLists, SendCompleteFlags);
+    // v1: pisahkan NBL hasil inject sendiri; jangan diteruskan ke protokol
+    {
+        PNET_BUFFER_LIST curr = NetBufferLists;
+        PNET_BUFFER_LIST prev = NULL;
+        PNET_BUFFER_LIST keep = NULL;
+
+        while (curr != NULL)
+        {
+            PNET_BUFFER_LIST next = NET_BUFFER_LIST_NEXT_NBL(curr);
+            if (VbInjectComplete(curr))
+            {
+                if (prev != NULL)
+                {
+                    NET_BUFFER_LIST_NEXT_NBL(prev) = next;
+                }
+            }
+            else
+            {
+                if (keep == NULL)
+                {
+                    keep = curr;
+                }
+                prev = curr;
+            }
+            curr = next;
+        }
+
+        NetBufferLists = keep;
+    }
+
+    if (NetBufferLists != NULL)
+    {
+        NdisFSendNetBufferListsComplete(pFilter->FilterHandle, NetBufferLists, SendCompleteFlags);
+    }
 
     DEBUGP(DL_TRACE, "<===SendNBLComplete.\n");
 }
@@ -1342,6 +1393,29 @@ Arguments:
             while (CurrNb)
             {
                 InterlockedAdd64(&pFilter->VbTxBytes, (LONG64)NET_BUFFER_DATA_LENGTH(CurrNb));
+                CurrNb = NET_BUFFER_NEXT_NB(CurrNb);
+            }
+        }
+
+        // v1: capture TX saat mode TX aktif (salin; passthrough tetap penuh)
+        if ((pFilter->VbMode & VB_MODE_TX) != 0)
+        {
+            PNET_BUFFER CurrNb = NET_BUFFER_LIST_FIRST_NB(NetBufferLists);
+            while (CurrNb != NULL)
+            {
+                ULONG nbLen = NET_BUFFER_DATA_LENGTH(CurrNb);
+                if (nbLen > 0)
+                {
+                    PUCHAR data;
+                    if (nbLen > VB_FRAME_MAX) { nbLen = VB_FRAME_MAX; }
+                    data = (PUCHAR)NdisGetDataBuffer(CurrNb, nbLen, VbCopyScratch, 1, 0);
+                    if (data != NULL)
+                    {
+                        VbRingCapture(VbTxRing, &VbTxRingLock, &VbTxHead, &VbTxTail,
+                                      &VbTxDrop, data, nbLen,
+                                      VB_RING_TX);
+                    }
+                }
                 CurrNb = NET_BUFFER_NEXT_NB(CurrNb);
             }
         }
@@ -1573,6 +1647,32 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
                 for (CurrNb = NET_BUFFER_LIST_FIRST_NB(CurrList); CurrNb; CurrNb = NET_BUFFER_NEXT_NB(CurrNb))
                 {
                     InterlockedAdd64(&pFilter->VbRxBytes, (LONG64)NET_BUFFER_DATA_LENGTH(CurrNb));
+                }
+            }
+        }
+
+        // v1: capture RX saat mode RX aktif (salin; passthrough tetap penuh)
+        if ((pFilter->VbMode & VB_MODE_RX) != 0)
+        {
+            PNET_BUFFER_LIST vbl;
+            for (vbl = NetBufferLists; vbl != NULL; vbl = NET_BUFFER_LIST_NEXT_NBL(vbl))
+            {
+                PNET_BUFFER vnb;
+                for (vnb = NET_BUFFER_LIST_FIRST_NB(vbl); vnb != NULL; vnb = NET_BUFFER_NEXT_NB(vnb))
+                {
+                    ULONG nbLen = NET_BUFFER_DATA_LENGTH(vnb);
+                    if (nbLen > 0)
+                    {
+                        PUCHAR vdata;
+                        if (nbLen > VB_FRAME_MAX) { nbLen = VB_FRAME_MAX; }
+                        vdata = (PUCHAR)NdisGetDataBuffer(vnb, nbLen, VbCopyScratch, 1, 0);
+                        if (vdata != NULL)
+                        {
+                            VbRingCapture(VbRxRing, &VbRxRingLock, &VbRxHead, &VbRxTail,
+                                          &VbRxDrop, vdata, nbLen,
+                                          VB_RING_RX);
+                        }
+                    }
                 }
             }
         }
@@ -1926,4 +2026,354 @@ Return Value:
     //
     NdisSetEvent(&FilterRequest->ReqEvent);
 }
+VOID
+VbRingInit(
+    VOID
+    )
+{
+    ULONG Bytes = VB_RING_ENTRIES * sizeof(VB_RING_ENTRY);
 
+    VbTxRing = (VB_RING_ENTRY*)NdisAllocateMemoryWithTagPriority(
+                                FilterDriverHandle, Bytes, FILTER_ALLOC_TAG,
+                                NormalPoolPriority);
+    VbRxRing = (VB_RING_ENTRY*)NdisAllocateMemoryWithTagPriority(
+                                FilterDriverHandle, Bytes, FILTER_ALLOC_TAG,
+                                NormalPoolPriority);
+
+    if (VbTxRing == NULL || VbRxRing == NULL)
+    {
+        if (VbTxRing != NULL)
+        {
+            NdisFreeMemory(VbTxRing, VB_RING_ENTRIES * sizeof(VB_RING_ENTRY), 0);
+            VbTxRing = NULL;
+        }
+        if (VbRxRing != NULL)
+        {
+            NdisFreeMemory(VbRxRing, VB_RING_ENTRIES * sizeof(VB_RING_ENTRY), 0);
+            VbRxRing = NULL;
+        }
+        return;
+    }
+
+    NdisZeroMemory(VbTxRing, Bytes);
+    NdisZeroMemory(VbRxRing, Bytes);
+
+    KeInitializeSpinLock(&VbTxRingLock);
+    KeInitializeSpinLock(&VbRxRingLock);
+
+    VbTxHead = VbTxTail = 0;
+    VbRxHead = VbRxTail = 0;
+    VbTxDrop = VbRxDrop = 0;
+}
+
+VOID
+VbRingUninit(
+    VOID
+    )
+{
+    if (VbTxRing != NULL)
+    {
+        NdisFreeMemory(VbTxRing, VB_RING_ENTRIES * sizeof(VB_RING_ENTRY), 0);
+        VbTxRing = NULL;
+    }
+    if (VbRxRing != NULL)
+    {
+        NdisFreeMemory(VbRxRing, VB_RING_ENTRIES * sizeof(VB_RING_ENTRY), 0);
+        VbRxRing = NULL;
+    }
+}
+VOID
+VbRingCapture(
+    IN VB_RING_ENTRY* Ring,
+    IN PKSPIN_LOCK Lock,
+    IN volatile LONG* Head,
+    IN volatile LONG* Tail,
+    IN volatile ULONG* Drop,
+    IN PUCHAR Data,
+    IN ULONG Len,
+    IN ULONG Flags
+    )
+{
+    KIRQL OldIrql;
+    LONG slot;
+
+    if (Ring == NULL || Len == 0)
+    {
+        return;
+    }
+    if (Len > VB_FRAME_MAX)
+    {
+        Len = VB_FRAME_MAX;
+    }
+
+    KeAcquireSpinLock(Lock, &OldIrql);
+
+    slot = *Head;
+    if ((ULONG)((slot - *Tail) & (VB_RING_ENTRIES - 1)) >= (VB_RING_ENTRIES - 1))
+    {
+        KeReleaseSpinLock(Lock, OldIrql);
+        InterlockedIncrement((volatile LONG*)Drop);
+        return;
+    }
+
+    Ring[slot].Len = Len;
+    Ring[slot].Flags = Flags;
+    NdisMoveMemory(Ring[slot].Data, Data, Len);
+    *Head = (*Head + 1) & (VB_RING_ENTRIES - 1);
+
+    KeReleaseSpinLock(Lock, OldIrql);
+
+    if (Flags == VB_RING_TX)
+    {
+        InterlockedIncrement64(&VbCapTx);
+    }
+    else
+    {
+        InterlockedIncrement64(&VbCapRx);
+    }
+}
+ULONG
+VbRingDrain(
+    IN VB_RING_ENTRY* Ring,
+    IN PKSPIN_LOCK Lock,
+    IN volatile LONG* Head,
+    IN volatile LONG* Tail,
+    OUT PVB_RING_ENTRY Out,
+    IN ULONG Max
+    )
+{
+    KIRQL OldIrql;
+    ULONG count = 0;
+
+    if (Ring == NULL || Out == NULL || Max == 0)
+    {
+        return 0;
+    }
+
+    KeAcquireSpinLock(Lock, &OldIrql);
+    while (count < Max && *Tail != *Head)
+    {
+        Out[count] = Ring[*Tail];
+        *Tail = (*Tail + 1) & (VB_RING_ENTRIES - 1);
+        count++;
+    }
+    KeReleaseSpinLock(Lock, OldIrql);
+
+    return count;
+}
+typedef struct _VB_INJ_ENTRY {
+    LIST_ENTRY              List;
+    PNET_BUFFER_LIST        Nbl;
+    PMDL                    Mdl;
+    PUCHAR                  Buf;
+} VB_INJ_ENTRY, *PVB_INJ_ENTRY;
+
+static NDIS_HANDLE    VbInjectNblPool;
+static LIST_ENTRY     VbInjList;
+static KSPIN_LOCK     VbInjLock;
+
+VOID
+VbInjectInit(
+    VOID
+    )
+{
+    NET_BUFFER_LIST_POOL_PARAMETERS PoolParams;
+
+    NdisZeroMemory(&PoolParams, sizeof(PoolParams));
+    PoolParams.Header.Type = NDIS_OBJECT_TYPE_DEFAULT;
+    PoolParams.Header.Revision = NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
+    PoolParams.Header.Size = sizeof(PoolParams);
+    PoolParams.ProtocolId = NDIS_PROTOCOL_ID_DEFAULT;
+    PoolParams.fAllocateNetBuffer = TRUE;
+    PoolParams.ContextSize = 0;
+
+    VbInjectNblPool = NdisAllocateNetBufferListPool(FilterDriverHandle, &PoolParams);
+    KeInitializeSpinLock(&VbInjLock);
+    InitializeListHead(&VbInjList);
+}
+
+VOID
+VbInjectUninit(
+    VOID
+    )
+{
+    PLIST_ENTRY Link;
+    PVB_INJ_ENTRY Ent;
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&VbInjLock, &OldIrql);
+    while (!IsListEmpty(&VbInjList))
+    {
+        Link = RemoveHeadList(&VbInjList);
+        Ent = CONTAINING_RECORD(Link, VB_INJ_ENTRY, List);
+        KeReleaseSpinLock(&VbInjLock, OldIrql);
+        IoFreeMdl(Ent->Mdl);
+        NdisFreeMemory(Ent->Buf, VB_FRAME_MAX, 0);
+        NdisFreeNetBufferList(Ent->Nbl);
+        NdisFreeMemory(Ent, sizeof(VB_INJ_ENTRY), 0);
+        KeAcquireSpinLock(&VbInjLock, &OldIrql);
+    }
+    KeReleaseSpinLock(&VbInjLock, OldIrql);
+
+    if (VbInjectNblPool != NULL)
+    {
+        NdisFreeNetBufferListPool(VbInjectNblPool);
+        VbInjectNblPool = NULL;
+    }
+}
+BOOLEAN
+VbInjectComplete(
+    IN PNET_BUFFER_LIST Nbl
+    )
+{
+    KIRQL           OldIrql;
+    PLIST_ENTRY     Link;
+    PVB_INJ_ENTRY   Ent;
+
+    KeAcquireSpinLock(&VbInjLock, &OldIrql);
+    for (Link = VbInjList.Flink; Link != &VbInjList; Link = Link->Flink)
+    {
+        Ent = CONTAINING_RECORD(Link, VB_INJ_ENTRY, List);
+        if (Ent->Nbl == Nbl)
+        {
+            RemoveEntryList(Link);
+            KeReleaseSpinLock(&VbInjLock, OldIrql);
+            IoFreeMdl(Ent->Mdl);
+            NdisFreeMemory(Ent->Buf, VB_FRAME_MAX, 0);
+            NdisFreeMemory(Ent, sizeof(VB_INJ_ENTRY), 0);
+            return TRUE;
+        }
+    }
+    KeReleaseSpinLock(&VbInjLock, OldIrql);
+    return FALSE;
+}
+NDIS_STATUS
+VbInjectTx(
+    IN PUCHAR Data,
+    IN ULONG Len
+    )
+{
+    PVB_INJ_ENTRY   Ent;
+    PMDL            Mdl;
+    PUCHAR          Buf;
+    PNET_BUFFER_LIST Nbl;
+    PLIST_ENTRY     Link;
+    PMS_FILTER      pFilter;
+    KIRQL           OldIrql;
+    NDIS_STATUS     Status = NDIS_STATUS_SUCCESS;
+
+    if (Len == 0 || Len > VB_FRAME_MAX || VbInjectNblPool == NULL)
+    {
+        return NDIS_STATUS_INVALID_PARAMETER;
+    }
+
+    Buf = (PUCHAR)NdisAllocateMemoryWithTagPriority(FilterDriverHandle,
+                                                    VB_FRAME_MAX,
+                                                    FILTER_ALLOC_TAG,
+                                                    NormalPoolPriority);
+    if (Buf == NULL)
+    {
+        return NDIS_STATUS_RESOURCES;
+    }
+    NdisZeroMemory(Buf, VB_FRAME_MAX);
+    NdisMoveMemory(Buf, Data, Len);
+
+    Mdl = IoAllocateMdl(Buf, VB_FRAME_MAX, FALSE, FALSE, NULL);
+    if (Mdl == NULL)
+    {
+        NdisFreeMemory(Buf, VB_FRAME_MAX, 0);
+        return NDIS_STATUS_RESOURCES;
+    }
+    MmBuildMdlForNonPagedPool(Mdl);
+
+    Ent = (PVB_INJ_ENTRY)NdisAllocateMemoryWithTagPriority(FilterDriverHandle,
+                                                           sizeof(VB_INJ_ENTRY),
+                                                           FILTER_ALLOC_TAG,
+                                                           NormalPoolPriority);
+    if (Ent == NULL)
+    {
+        IoFreeMdl(Mdl);
+        NdisFreeMemory(Buf, VB_FRAME_MAX, 0);
+        return NDIS_STATUS_RESOURCES;
+    }
+
+    Nbl = NdisAllocateNetBufferAndNetBufferList(VbInjectNblPool, 0, 0, Mdl, 0, Len);
+    if (Nbl == NULL)
+    {
+        NdisFreeMemory(Ent, sizeof(VB_INJ_ENTRY), 0);
+        IoFreeMdl(Mdl);
+        NdisFreeMemory(Buf, VB_FRAME_MAX, 0);
+        return NDIS_STATUS_RESOURCES;
+    }
+
+    Nbl->SourceHandle = FilterDriverHandle;
+
+    Ent->Nbl = Nbl;
+    Ent->Mdl = Mdl;
+    Ent->Buf = Buf;
+
+    KeAcquireSpinLock(&VbInjLock, &OldIrql);
+    InsertHeadList(&VbInjList, &Ent->List);
+    KeReleaseSpinLock(&VbInjLock, OldIrql);
+
+    FILTER_ACQUIRE_LOCK(&FilterListLock, FALSE);
+    for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+    {
+        pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+        if (pFilter->State == FilterRunning)
+        {
+            InterlockedIncrement64(&VbInj);
+            NdisFSendNetBufferLists(pFilter->FilterHandle,
+                                    Nbl,
+                                    NDIS_DEFAULT_PORT_NUMBER,
+                                    NDIS_SEND_FLAGS_DISPATCH_LEVEL);
+            Status = NDIS_STATUS_SUCCESS;
+            break;
+        }
+    }
+    FILTER_RELEASE_LOCK(&FilterListLock, FALSE);
+
+    if (Status != NDIS_STATUS_SUCCESS)
+    {
+        KeAcquireSpinLock(&VbInjLock, &OldIrql);
+        RemoveEntryList(&Ent->List);
+        KeReleaseSpinLock(&VbInjLock, OldIrql);
+        NdisFreeMemory(Ent, sizeof(VB_INJ_ENTRY), 0);
+        NdisFreeNetBufferList(Nbl);
+        IoFreeMdl(Mdl);
+        NdisFreeMemory(Buf, VB_FRAME_MAX, 0);
+    }
+
+    return Status;
+}
+
+
+ULONG
+VbDrainAll(
+    OUT PVB_RING_ENTRY Out,
+    IN  ULONG Max
+    )
+/*++
+    Drain ring TX lalu RX ke buffer user, terbatas Max entri.
+    Flags tiap entri sudah disimpan saat capture (VB_RING_TX/RX).
+--*/
+{
+    ULONG n;
+    ULONG total = 0;
+
+    if (Out == NULL || Max == 0)
+    {
+        return 0;
+    }
+
+    n = VbRingDrain(VbTxRing, &VbTxRingLock, &VbTxHead, &VbTxTail, Out, Max);
+    total += n;
+
+    if (Max > n)
+    {
+        total += VbRingDrain(VbRxRing, &VbRxRingLock, &VbRxHead, &VbRxTail,
+                             Out + n, Max - n);
+    }
+
+    return total;
+}
