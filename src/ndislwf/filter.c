@@ -2415,6 +2415,39 @@ VbDrainAll(
     return total;
 }
 BOOLEAN
+VbPolicyTxBlockedMac(
+    IN PUCHAR Data
+    )
+/*++
+    Match dst MAC ethernet (Data[0..5]) terhadap rule VB_MATCH_DSTMAC.
+    Dipakai agar frame hasil inject (dst MAC beda) lolos dari block policy.
+--*/
+{
+    ULONG i;
+    PVB_POLICY_RULE r;
+
+    if (VbPolicy.Enabled == 0)
+    {
+        return FALSE;
+    }
+    for (i = 0; i < VbPolicy.Count && i < VB_POLICY_MAX_RULES; i++)
+    {
+        r = &VbPolicy.Rules[i];
+        if ((r->Match & VB_MATCH_DSTMAC) == 0)
+        {
+            continue;
+        }
+        if (Data[0] == r->DstMac[0] && Data[1] == r->DstMac[1] &&
+            Data[2] == r->DstMac[2] && Data[3] == r->DstMac[3] &&
+            Data[4] == r->DstMac[4] && Data[5] == r->DstMac[5])
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+BOOLEAN
 VbPolicyTxBlocked(
     IN PUCHAR Data,
     IN ULONG  Len
@@ -2452,6 +2485,12 @@ VbPolicyTxBlocked(
     {
         srcPort = (USHORT)((USHORT)Data[off + ipHdrLen] << 8 | Data[off + ipHdrLen + 1]);
         dstPort = (USHORT)((USHORT)Data[off + ipHdrLen + 2] << 8 | Data[off + ipHdrLen + 3]);
+    }
+
+    if (VbPolicyTxBlockedMac(Data))
+    {
+        InterlockedIncrement64(&VbBlocked);
+        return TRUE;
     }
 
     for (i = 0; i < VbPolicy.Count && i < VB_POLICY_MAX_RULES; i++)

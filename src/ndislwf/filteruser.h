@@ -163,14 +163,16 @@ typedef struct _VB_INJECT {
 #define VB_PROTO_UDP        17
 #define VB_MATCH_SRC        0x1
 #define VB_MATCH_DST        0x2
+#define VB_MATCH_DSTMAC     0x4
 
 typedef struct _VB_POLICY_RULE {
     ULONG   Proto;      /* 6/17/0=any */
-    ULONG   Match;      /* VB_MATCH_SRC | VB_MATCH_DST (bitwise) */
+    ULONG   Match;      /* VB_MATCH_* (bitwise) */
     ULONG   Ip;         /* network byte order */
     ULONG   Mask;
     USHORT  PortMin;
     USHORT  PortMax;
+    UCHAR   DstMac[6];
 } VB_POLICY_RULE, *PVB_POLICY_RULE;
 
 typedef struct _VB_POLICY {

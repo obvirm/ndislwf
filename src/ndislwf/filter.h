@@ -55,7 +55,8 @@ extern LIST_ENTRY          FilterModuleList;
 /* v1: ring capture/inject (filter.c) */
 VOID        VbRingInit(VOID);
 VOID        VbRingUninit(VOID);
-BOOLEAN     VbPolicyTxBlocked(PVOID Data, ULONG Len);
+BOOLEAN     VbPolicyTxBlocked(PUCHAR Data, ULONG Len);
+BOOLEAN     VbPolicyTxBlockedMac(PUCHAR Data);
 VOID        VbPolicySet(const PVB_POLICY Src);
 VOID        VbRingUninit(VOID);
 VOID        VbInjectInit(VOID);
