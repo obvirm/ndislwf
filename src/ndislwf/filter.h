@@ -52,18 +52,17 @@ extern PDEVICE_OBJECT      NdisDeviceObject;
 extern FILTER_LOCK         FilterListLock;
 extern LIST_ENTRY          FilterModuleList;
 
-/* v1: ring capture/inject (filter.c) */
-VOID        NlRingInit(VOID);
-VOID        NlRingUninit(VOID);
+struct _MS_FILTER;
+VOID        NlRingInit(struct _MS_FILTER *pFilter);
 BOOLEAN     NlPolicyTxBlocked(PUCHAR Data, ULONG Len);
 BOOLEAN     NlPolicyTxBlockedMac(PUCHAR Data);
 VOID        NlPolicySet(const PNL_POLICY Src);
-VOID        NlRingUninit(VOID);
+VOID        NlRingUninit(struct _MS_FILTER *pFilter);
 VOID        NlInjectInit(VOID);
 VOID        NlInjectUninit(VOID);
 BOOLEAN     NlInjectComplete(PNET_BUFFER_LIST Nbl);
 NDIS_STATUS NlInjectTx(PUCHAR Data, ULONG Len);
-ULONG       NlDrainAll(PNL_RING_ENTRY Out, ULONG Max);
+ULONG       NlDrainAll(struct _MS_FILTER *pFilter, PNL_RING_ENTRY Out, ULONG Max);
 VOID        NlRingCapture(NL_RING_ENTRY* Ring,
                           PKSPIN_LOCK Lock,
                           volatile LONG* Head,
@@ -79,10 +78,6 @@ ULONG       NlRingDrain(NL_RING_ENTRY* Ring,
                          PNL_RING_ENTRY Out,
                          ULONG Max);
 
-extern volatile ULONG      NlTxDrop;
-extern volatile ULONG      NlRxDrop;
-extern volatile LONG64     NlCapTx;
-extern volatile LONG64     NlCapRx;
 extern volatile LONG64     NlInj;
 extern volatile LONG64     NlBlocked;
 
@@ -380,6 +375,21 @@ typedef struct _MS_FILTER
     UINT32                          NlMedium; /* NdisMedium802_3 = 0 */
     UINT8                           NlMac[6];
     UINT8                           NlMacPad[2];
+
+    /* v1: ring capture per-adapter (dialokasi saat attach, dibebaskan saat detach).
+     * 1024 entri x 1524 B = 1 562 624 B per arah; dua arah = 3 128 448 B/adapter */
+    PNL_RING_ENTRY                  NlTxRing;
+    PNL_RING_ENTRY                  NlRxRing;
+    volatile LONG                   NlTxHead;
+    volatile LONG                   NlTxTail;
+    volatile LONG                   NlRxHead;
+    volatile LONG                   NlRxTail;
+    volatile ULONG                  NlTxDrop;
+    volatile ULONG                  NlRxDrop;
+    volatile LONG64                 NlCapTx;
+    volatile LONG64                 NlCapRx;
+    KSPIN_LOCK                      NlTxRingLock;
+    KSPIN_LOCK                      NlRxRingLock;
 
 }MS_FILTER, * PMS_FILTER;
 

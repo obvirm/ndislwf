@@ -36,16 +36,7 @@ static UCHAR NlCopyScratch[NL_FRAME_MAX];
 static UCHAR NlCopyScratch2[NL_FRAME_MAX];
 static NL_RING_ENTRY* NlTxRing;
 static NL_RING_ENTRY* NlRxRing;
-static KSPIN_LOCK     NlTxRingLock;
-static KSPIN_LOCK     NlRxRingLock;
-static volatile LONG  NlTxHead;
-static volatile LONG  NlTxTail;
-static volatile LONG  NlRxHead;
-static volatile LONG  NlRxTail;
-volatile ULONG     NlTxDrop;
-volatile ULONG     NlRxDrop;
-volatile LONG64    NlCapTx;
-volatile LONG64    NlCapRx;
+
 volatile LONG64    NlInj;
 volatile LONG64    NlBlocked;
 
@@ -172,7 +163,6 @@ Return Value:
             DEBUGP(DL_WARN, "Register filter driver failed.\n");
             break;
         }
-        NlRingInit();
         NlInjectInit();
 
         Status = FilterRegisterDevice();
@@ -360,6 +350,14 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
         pFilter->TrackSends = TRUE;
         pFilter->FilterHandle = NdisFilterHandle;
         pFilter->NlIdx = (UINT32)InterlockedIncrement((volatile LONG *)&NlInstanceCounter) - 1;
+        NlRingInit(pFilter);
+        if (pFilter->NlTxRing == NULL || pFilter->NlRxRing == NULL)
+        {
+            InterlockedDecrement((volatile LONG *)&NlInstanceCounter);
+            FILTER_FREE_MEM(pFilter);
+            DEBUGP(DL_WARN, "Failed to allocate per-adapter ring.\n");
+            return NDIS_STATUS_RESOURCES;
+        }
 
 
         NdisZeroMemory(&FilterAttributes, sizeof(NDIS_FILTER_ATTRIBUTES));
@@ -392,6 +390,10 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
     {
         if (pFilter != NULL)
         {
+            if (pFilter->NlTxRing != NULL)
+            {
+                NlRingUninit(pFilter);
+            }
             FILTER_FREE_MEM(pFilter);
         }
     }
@@ -690,6 +692,7 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
     RemoveEntryList(&pFilter->FilterModuleLink);
     FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
+    NlRingUninit(pFilter);
 
     //
     // Free the memory allocated
@@ -735,7 +738,6 @@ Return Value:
     //
     FilterDeregisterDevice();
     NlInjectUninit();
-    NlRingUninit();
     NdisFDeregisterFilterDriver(FilterDriverHandle);
 
 #if DBG
@@ -1426,9 +1428,10 @@ Arguments:
                         {
                             NdisMoveMemory(pFilter->NlMac, data + 6, 6);
                         }
-                        NlRingCapture(NlTxRing, &NlTxRingLock, &NlTxHead, &NlTxTail,
-                                      &NlTxDrop, data, nbLen,
+                        NlRingCapture(pFilter->NlTxRing, &pFilter->NlTxRingLock, &pFilter->NlTxHead, &pFilter->NlTxTail,
+                                      &pFilter->NlTxDrop, data, nbLen,
                                       NL_RING_TX);
+                        InterlockedIncrement64(&pFilter->NlCapTx);
                     }
 
                 }
@@ -1706,9 +1709,10 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
                         rdata = (PUCHAR)NdisGetDataBuffer(rnb, nbLen, NlCopyScratch, 1, 0);
                         if (rdata != NULL)
                         {
-                            NlRingCapture(NlRxRing, &NlRxRingLock, &NlRxHead, &NlRxTail,
-                                          &NlRxDrop, rdata, nbLen,
+                            NlRingCapture(pFilter->NlRxRing, &pFilter->NlRxRingLock, &pFilter->NlRxHead, &pFilter->NlRxTail,
+                                          &pFilter->NlRxDrop, rdata, nbLen,
                                           NL_RING_RX);
+                        InterlockedIncrement64(&pFilter->NlCapRx);
                         }
                     }
                 }
@@ -2066,58 +2070,60 @@ Return Value:
 }
 VOID
 NlRingInit(
-    VOID
+    IN PMS_FILTER pFilter
     )
 {
     ULONG Bytes = NL_RING_ENTRIES * sizeof(NL_RING_ENTRY);
 
-    NlTxRing = (NL_RING_ENTRY*)NdisAllocateMemoryWithTagPriority(
+    pFilter->NlTxRing = (NL_RING_ENTRY*)NdisAllocateMemoryWithTagPriority(
                                 FilterDriverHandle, Bytes, FILTER_ALLOC_TAG,
                                 NormalPoolPriority);
-    NlRxRing = (NL_RING_ENTRY*)NdisAllocateMemoryWithTagPriority(
+    pFilter->NlRxRing = (NL_RING_ENTRY*)NdisAllocateMemoryWithTagPriority(
                                 FilterDriverHandle, Bytes, FILTER_ALLOC_TAG,
                                 NormalPoolPriority);
 
-    if (NlTxRing == NULL || NlRxRing == NULL)
+    if (pFilter->NlTxRing == NULL || pFilter->NlRxRing == NULL)
     {
-        if (NlTxRing != NULL)
+        if (pFilter->NlTxRing != NULL)
         {
-            NdisFreeMemory(NlTxRing, NL_RING_ENTRIES * sizeof(NL_RING_ENTRY), 0);
-            NlTxRing = NULL;
+            NdisFreeMemory(pFilter->NlTxRing, Bytes, 0);
+            pFilter->NlTxRing = NULL;
         }
-        if (NlRxRing != NULL)
+        if (pFilter->NlRxRing != NULL)
         {
-            NdisFreeMemory(NlRxRing, NL_RING_ENTRIES * sizeof(NL_RING_ENTRY), 0);
-            NlRxRing = NULL;
+            NdisFreeMemory(pFilter->NlRxRing, Bytes, 0);
+            pFilter->NlRxRing = NULL;
         }
         return;
     }
 
-    NdisZeroMemory(NlTxRing, Bytes);
-    NdisZeroMemory(NlRxRing, Bytes);
+    NdisZeroMemory(pFilter->NlTxRing, Bytes);
+    NdisZeroMemory(pFilter->NlRxRing, Bytes);
 
-    KeInitializeSpinLock(&NlTxRingLock);
-    KeInitializeSpinLock(&NlRxRingLock);
+    KeInitializeSpinLock(&pFilter->NlTxRingLock);
+    KeInitializeSpinLock(&pFilter->NlRxRingLock);
 
-    NlTxHead = NlTxTail = 0;
-    NlRxHead = NlRxTail = 0;
-    NlTxDrop = NlRxDrop = 0;
+    pFilter->NlTxHead = pFilter->NlTxTail = 0;
+    pFilter->NlRxHead = pFilter->NlRxTail = 0;
+    pFilter->NlTxDrop = pFilter->NlRxDrop = 0;
+    pFilter->NlCapTx = pFilter->NlCapRx = 0;
 }
 
 VOID
 NlRingUninit(
-    VOID
+    IN PMS_FILTER pFilter
     )
 {
-    if (NlTxRing != NULL)
+    ULONG Bytes = NL_RING_ENTRIES * sizeof(NL_RING_ENTRY);
+    if (pFilter->NlTxRing != NULL)
     {
-        NdisFreeMemory(NlTxRing, NL_RING_ENTRIES * sizeof(NL_RING_ENTRY), 0);
-        NlTxRing = NULL;
+        NdisFreeMemory(pFilter->NlTxRing, Bytes, 0);
+        pFilter->NlTxRing = NULL;
     }
-    if (NlRxRing != NULL)
+    if (pFilter->NlRxRing != NULL)
     {
-        NdisFreeMemory(NlRxRing, NL_RING_ENTRIES * sizeof(NL_RING_ENTRY), 0);
-        NlRxRing = NULL;
+        NdisFreeMemory(pFilter->NlRxRing, Bytes, 0);
+        pFilter->NlRxRing = NULL;
     }
 }
 VOID
@@ -2160,15 +2166,6 @@ NlRingCapture(
     *Head = (*Head + 1) & (NL_RING_ENTRIES - 1);
 
     KeReleaseSpinLock(Lock, OldIrql);
-
-    if (Flags == NL_RING_TX)
-    {
-        InterlockedIncrement64(&NlCapTx);
-    }
-    else
-    {
-        InterlockedIncrement64(&NlCapRx);
-    }
 }
 ULONG
 NlRingDrain(
@@ -2388,28 +2385,29 @@ NlInjectTx(
 
 ULONG
 NlDrainAll(
+    IN  PMS_FILTER pFilter,
     OUT PNL_RING_ENTRY Out,
     IN  ULONG Max
     )
 /*++
-    Drain ring TX lalu RX ke buffer user, terbatas Max entri.
+    Drain ring TX lalu RX per-filter-instance ke buffer user, terbatas Max entri.
     Flags tiap entri sudah disimpan saat capture (NL_RING_TX/RX).
 --*/
 {
     ULONG n;
     ULONG total = 0;
 
-    if (Out == NULL || Max == 0)
+    if (Out == NULL || Max == 0 || pFilter->NlTxRing == NULL)
     {
         return 0;
     }
 
-    n = NlRingDrain(NlTxRing, &NlTxRingLock, &NlTxHead, &NlTxTail, Out, Max);
+    n = NlRingDrain(pFilter->NlTxRing, &pFilter->NlTxRingLock, &pFilter->NlTxHead, &pFilter->NlTxTail, Out, Max);
     total += n;
 
-    if (Max > n)
+    if (Max > n && pFilter->NlRxRing != NULL)
     {
-        total += NlRingDrain(NlRxRing, &NlRxRingLock, &NlRxHead, &NlRxTail,
+        total += NlRingDrain(pFilter->NlRxRing, &pFilter->NlRxRingLock, &pFilter->NlRxHead, &pFilter->NlRxTail,
                              Out + n, Max - n);
     }
 

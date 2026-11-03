@@ -112,14 +112,18 @@ NL_API int nl_set_mode(uint32_t adapter_index, uint32_t flags)
     return nl_ioctl(NL_IOC_SET_MODE, &m, (DWORD)sizeof(m), NULL, 0, NULL);
 }
 
-NL_API int nl_stats(nl_stats_t* out)
+NL_API int nl_stats(const uint32_t* adapter, nl_stats_t* out)
 {
     if (out == NULL) { return ERROR_INVALID_PARAMETER; }
     memset(out, 0, sizeof(*out));
-    return nl_ioctl(NL_IOC_STATS, NULL, 0, out, (DWORD)sizeof(*out), NULL);
+    if (adapter == NULL)
+    {
+        return nl_ioctl(NL_IOC_STATS, NULL, 0, out, (DWORD)sizeof(*out), NULL);
+    }
+    return nl_ioctl(NL_IOC_STATS, (void*)adapter, (DWORD)sizeof(*adapter), out, (DWORD)sizeof(*out), NULL);
 }
 
-NL_API int nl_read_ring(nl_ring_entry_t* out, int max, int* count)
+NL_API int nl_read_ring(const uint32_t* adapter, nl_ring_entry_t* out, int max, int* count)
 {
     if (out == NULL || count == NULL || max <= 0) { return ERROR_INVALID_PARAMETER; }
 
@@ -131,7 +135,15 @@ NL_API int nl_read_ring(nl_ring_entry_t* out, int max, int* count)
         return ERROR_NOT_ENOUGH_MEMORY;
     }
     DWORD ret = 0;
-    int e = nl_ioctl(NL_IOC_READ_RING, NULL, 0, buf, total, &ret);
+    int e;
+    if (adapter == NULL)
+    {
+        e = nl_ioctl(NL_IOC_READ_RING, NULL, 0, buf, total, &ret);
+    }
+    else
+    {
+        e = nl_ioctl(NL_IOC_READ_RING, (void*)adapter, (DWORD)sizeof(*adapter), buf, total, &ret);
+    }
     if (e != 0)
     {
         HeapFree(GetProcessHeap(), 0, buf);
@@ -171,7 +183,7 @@ NL_API int nl_drain_ring(int* tx, int* rx, uint64_t* bytes)
     while (guard++ < 96)
     {
         int n = 0;
-        int e = nl_read_ring(buf, 32, &n);
+        int e = nl_read_ring(NULL, buf, 32, &n);
         if (e != 0) { return e; }
         if (n == 0) { break; }
         for (int i = 0; i < n; i++)

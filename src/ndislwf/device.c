@@ -323,18 +323,31 @@ FilterDeviceIoControl(
         {
             PNL_STATS ps = (PNL_STATS)Irp->AssociatedIrp.SystemBuffer;
             LONG64 rx = 0, tx = 0, capRx = 0, capTx = 0, inj = 0;
+            ULONG drop = 0;
             ULONG units = 0;
+            ULONG wantIdx = 0;
+            BOOLEAN perAdapter = (IrpSp->Parameters.DeviceIoControl.InputBufferLength >= sizeof(UINT32));
 
-            capRx = NlCapRx;
-            capTx = NlCapTx;
+            if (perAdapter && Irp->AssociatedIrp.SystemBuffer != NULL)
+            {
+                wantIdx = *(volatile UINT32 *)Irp->AssociatedIrp.SystemBuffer;
+            }
+
             inj = NlInj;
 
             FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
             for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
             {
                 PMS_FILTER pF = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                if (perAdapter && pF->NlIdx != wantIdx)
+                {
+                    continue;
+                }
                 rx += pF->NlRxBytes;
                 tx += pF->NlTxBytes;
+                capRx += pF->NlCapRx;
+                capTx += pF->NlCapTx;
+                drop += pF->NlTxDrop + pF->NlRxDrop;
                 units++;
             }
             FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
@@ -348,8 +361,7 @@ FilterDeviceIoControl(
                 ps->RxCaptured = (UINT64)capRx;
                 ps->TxCaptured = (UINT64)capTx;
                 ps->Injected = (UINT64)inj;
-                ps->Dropped = (UINT64)InterlockedOr((volatile LONG *)&NlTxDrop, 0)
-                            + (UINT64)InterlockedOr((volatile LONG *)&NlRxDrop, 0);
+                ps->Dropped = (UINT64)drop;
                 ps->ActiveUnits = units;
                 ps->AbiVersion = NL_ABI_VERSION;
                 Status = STATUS_SUCCESS;
@@ -365,8 +377,12 @@ FilterDeviceIoControl(
         {
             PUCHAR ob = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
             ULONG OutLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
             ULONG Max;
             ULONG cnt;
+            ULONG wantIdx = 0;
+            PMS_FILTER pSel = NULL;
+            PLIST_ENTRY l2;
 
             if (OutLen < sizeof(ULONG))
             {
@@ -374,8 +390,42 @@ FilterDeviceIoControl(
                 break;
             }
 
+            /* in (opsional): [u32 adapter_index]; tanpa in = instance pertama */
+            if (InLen >= sizeof(UINT32) && ob != NULL)
+            {
+                wantIdx = *(volatile UINT32 *)ob;
+            }
+
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (l2 = FilterModuleList.Flink; l2 != &FilterModuleList; l2 = l2->Flink)
+            {
+                PMS_FILTER pF = CONTAINING_RECORD(l2, MS_FILTER, FilterModuleLink);
+                if (InLen >= sizeof(UINT32))
+                {
+                    if (pF->NlIdx == wantIdx)
+                    {
+                        pSel = pF;
+                        break;
+                    }
+                }
+                else
+                {
+                    pSel = pF;
+                    break;
+                }
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+
+            if (pSel == NULL)
+            {
+                *(ULONG *)ob = 0;
+                InfoLength = sizeof(ULONG);
+                Status = STATUS_SUCCESS;
+                break;
+            }
+
             Max = (OutLen - sizeof(ULONG)) / sizeof(NL_RING_ENTRY);
-            cnt = NlDrainAll((PNL_RING_ENTRY)(ob + sizeof(ULONG)), Max);
+            cnt = NlDrainAll(pSel, (PNL_RING_ENTRY)(ob + sizeof(ULONG)), Max);
 
             *(ULONG *)ob = cnt;
             InfoLength = sizeof(ULONG) + cnt * sizeof(NL_RING_ENTRY);
@@ -428,11 +478,13 @@ FilterDeviceIoControl(
                 PMS_FILTER pF = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
                 InterlockedExchange64(&pF->NlRxBytes, 0);
                 InterlockedExchange64(&pF->NlTxBytes, 0);
+                InterlockedExchange64(&pF->NlCapRx, 0);
+                InterlockedExchange64(&pF->NlCapTx, 0);
+                InterlockedExchange((volatile LONG *)&pF->NlTxDrop, 0);
+                InterlockedExchange((volatile LONG *)&pF->NlRxDrop, 0);
             }
             FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
-            NlTxDrop = 0;
-            NlRxDrop = 0;
             Status = STATUS_SUCCESS;
             InfoLength = 0;
             break;

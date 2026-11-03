@@ -102,11 +102,11 @@ NL_API int  nl_enum(nl_adapter_t* out, int max, int* count);
 NL_API int  nl_set_mode(uint32_t adapter_index, uint32_t flags);
 
 /* Statistik penuh. 0 = sukses. */
-NL_API int  nl_stats(nl_stats_t* out);
+NL_API int  nl_stats(const uint32_t* adapter, nl_stats_t* out);
 
 /* Satu panggilan READ_RING: out bisa max entri; count efektif di *count.
  * 0 = sukses (jika count = 0, ring kosong). */
-NL_API int  nl_read_ring(nl_ring_entry_t* out, int max, int* count);
+NL_API int  nl_read_ring(const uint32_t* adapter, nl_ring_entry_t* out, int max, int* count);
 
 /* Drain seluruh ring; summary di luar. 0 = sukses. */
 NL_API int  nl_drain_ring(int* tx, int* rx, uint64_t* bytes);
