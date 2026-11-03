@@ -1404,27 +1404,6 @@ Arguments:
             }
         }
 
-        // v1: policy block TX — independen dari mode capture
-        if (VbPolicy.Enabled != 0)
-        {
-            PNET_BUFFER Pnbl = NET_BUFFER_LIST_FIRST_NB(NetBufferLists);
-            ULONG Plen = Pnbl != NULL ? NET_BUFFER_DATA_LENGTH(Pnbl) : 0;
-            if (Plen > 0)
-            {
-                PUCHAR pdata;
-                if (Plen > VB_FRAME_MAX) { Plen = VB_FRAME_MAX; }
-                pdata = (PUCHAR)NdisGetDataBuffer(Pnbl, Plen, VbCopyScratch2, 1, 0);
-                if (pdata != NULL && VbPolicyTxBlocked(pdata, Plen))
-                {
-                    NdisFSendNetBufferListsComplete(pFilter->FilterHandle,
-                                                    NetBufferLists,
-                                                    DispatchLevel ?
-                      NDIS_SEND_COMPLETE_FLAGS_DISPATCH_LEVEL : 0);
-                    DEBUGP(DL_TRACE, "<===SendNBL dropped (policy).\n");
-                    return;
-                }
-            }
-        }
         // v1: capture TX saat mode TX aktif (salin; passthrough tetap penuh)
         if ((pFilter->VbMode & VB_MODE_TX) != 0)
         {
@@ -1454,6 +1433,28 @@ Arguments:
 
                 }
                 CurrNb = NET_BUFFER_NEXT_NB(CurrNb);
+            }
+        }
+
+        // v1: capture dulu, baru policy block TX — engine masih melihat frame yang diblokir
+        if (VbPolicy.Enabled != 0)
+        {
+            PNET_BUFFER Pnbl = NET_BUFFER_LIST_FIRST_NB(NetBufferLists);
+            ULONG Plen = Pnbl != NULL ? NET_BUFFER_DATA_LENGTH(Pnbl) : 0;
+            if (Plen > 0)
+            {
+                PUCHAR pdata;
+                if (Plen > VB_FRAME_MAX) { Plen = VB_FRAME_MAX; }
+                pdata = (PUCHAR)NdisGetDataBuffer(Pnbl, Plen, VbCopyScratch2, 1, 0);
+                if (pdata != NULL && VbPolicyTxBlocked(pdata, Plen))
+                {
+                    NdisFSendNetBufferListsComplete(pFilter->FilterHandle,
+                                                    NetBufferLists,
+                                                    DispatchLevel ?
+                      NDIS_SEND_COMPLETE_FLAGS_DISPATCH_LEVEL : 0);
+                    DEBUGP(DL_TRACE, "<===SendNBL dropped (policy).\n");
+                    return;
+                }
             }
         }
 
