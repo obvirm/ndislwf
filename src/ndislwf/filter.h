@@ -55,6 +55,9 @@ extern LIST_ENTRY          FilterModuleList;
 /* v1: ring capture/inject (filter.c) */
 VOID        VbRingInit(VOID);
 VOID        VbRingUninit(VOID);
+BOOLEAN     VbPolicyTxBlocked(PVOID Data, ULONG Len);
+VOID        VbPolicySet(const PVB_POLICY Src);
+VOID        VbRingUninit(VOID);
 VOID        VbInjectInit(VOID);
 VOID        VbInjectUninit(VOID);
 BOOLEAN     VbInjectComplete(PNET_BUFFER_LIST Nbl);
@@ -80,6 +83,7 @@ extern volatile ULONG      VbRxDrop;
 extern volatile LONG64     VbCapTx;
 extern volatile LONG64     VbCapRx;
 extern volatile LONG64     VbInj;
+extern volatile LONG64     VbBlocked;
 
 extern LONG                VbInstanceCounter;
 

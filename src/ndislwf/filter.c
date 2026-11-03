@@ -33,6 +33,7 @@ PDEVICE_OBJECT      NdisDeviceObject = NULL;
 FILTER_LOCK         FilterListLock;
 LIST_ENTRY          FilterModuleList;
 static UCHAR VbCopyScratch[VB_FRAME_MAX];
+static UCHAR VbCopyScratch2[VB_FRAME_MAX];
 static VB_RING_ENTRY* VbTxRing;
 static VB_RING_ENTRY* VbRxRing;
 static KSPIN_LOCK     VbTxRingLock;
@@ -46,6 +47,10 @@ volatile ULONG     VbRxDrop;
 volatile LONG64    VbCapTx;
 volatile LONG64    VbCapRx;
 volatile LONG64    VbInj;
+volatile LONG64    VbBlocked;
+
+/* policy block TX (global, simpel: satu set aturan untuk semua adapter) */
+static VB_POLICY   VbPolicy;
 
 LONG                VbInstanceCounter = -1;  /* ordinal adapter */
 
@@ -1399,6 +1404,27 @@ Arguments:
             }
         }
 
+        // v1: policy block TX — independen dari mode capture
+        if (VbPolicy.Enabled != 0)
+        {
+            PNET_BUFFER Pnbl = NET_BUFFER_LIST_FIRST_NB(NetBufferLists);
+            ULONG Plen = Pnbl != NULL ? NET_BUFFER_DATA_LENGTH(Pnbl) : 0;
+            if (Plen > 0)
+            {
+                PUCHAR pdata;
+                if (Plen > VB_FRAME_MAX) { Plen = VB_FRAME_MAX; }
+                pdata = (PUCHAR)NdisGetDataBuffer(Pnbl, Plen, VbCopyScratch2, 1, 0);
+                if (pdata != NULL && VbPolicyTxBlocked(pdata, Plen))
+                {
+                    NdisFSendNetBufferListsComplete(pFilter->FilterHandle,
+                                                    NetBufferLists,
+                                                    DispatchLevel ?
+                      NDIS_SEND_COMPLETE_FLAGS_DISPATCH_LEVEL : 0);
+                    DEBUGP(DL_TRACE, "<===SendNBL dropped (policy).\n");
+                    return;
+                }
+            }
+        }
         // v1: capture TX saat mode TX aktif (salin; passthrough tetap penuh)
         if ((pFilter->VbMode & VB_MODE_TX) != 0)
         {
@@ -1425,6 +1451,7 @@ Arguments:
                                       &VbTxDrop, data, nbLen,
                                       VB_RING_TX);
                     }
+
                 }
                 CurrNb = NET_BUFFER_NEXT_NB(CurrNb);
             }
@@ -2386,4 +2413,85 @@ VbDrainAll(
     }
 
     return total;
+}
+BOOLEAN
+VbPolicyTxBlocked(
+    IN PUCHAR Data,
+    IN ULONG  Len
+    )
+/*++
+    Cek frame TX (header IPv4). Return TRUE bila menimpa (kena salah satu rule).
+    Hanya membaca header; akses DISPATCH-safe (sudah di salin ke buffer).
+--*/
+{
+    PVB_POLICY_RULE r;
+    ULONG i;
+    USHORT srcPort, dstPort;
+    ULONG ipHdrLen, proto, sip, dip, off;
+
+    if (VbPolicy.Enabled == 0 || Len < 34)
+    {
+        return FALSE;
+    }
+    if (Data[12] != 0x08 || Data[13] != 0x00)
+    {
+        return FALSE; /* hanya IPv4 */
+    }
+
+    off = 14;
+    proto = Data[off + 9];
+    ipHdrLen = (ULONG)(Data[off] & 0x0F) * 4;
+    if (ipHdrLen < 20 || Len < off + ipHdrLen)
+    {
+        return FALSE;
+    }
+    sip = *(ULONG *)&Data[off + 12];
+    dip = *(ULONG *)&Data[off + 16];
+    srcPort = dstPort = 0;
+    if (proto == 6 || proto == 17)
+    {
+        srcPort = (USHORT)((USHORT)Data[off + ipHdrLen] << 8 | Data[off + ipHdrLen + 1]);
+        dstPort = (USHORT)((USHORT)Data[off + ipHdrLen + 2] << 8 | Data[off + ipHdrLen + 3]);
+    }
+
+    for (i = 0; i < VbPolicy.Count && i < VB_POLICY_MAX_RULES; i++)
+    {
+        r = &VbPolicy.Rules[i];
+        if (r->Proto != 0 && r->Proto != proto) { continue; }
+        if (r->Match & VB_MATCH_SRC)
+        {
+            if ((sip & r->Mask) == (r->Ip & r->Mask))
+            {
+                if (srcPort == 0 || (srcPort >= r->PortMin && srcPort <= r->PortMax))
+                {
+                    InterlockedIncrement64(&VbBlocked);
+                    return TRUE;
+                }
+            }
+        }
+        if (r->Match & VB_MATCH_DST)
+        {
+            if ((dip & r->Mask) == (r->Ip & r->Mask))
+            {
+                if (dstPort == 0 || (dstPort >= r->PortMin && dstPort <= r->PortMax))
+                {
+                    InterlockedIncrement64(&VbBlocked);
+                    return TRUE;
+                }
+            }
+        }
+    }
+    return FALSE;
+}
+
+VOID
+VbPolicySet(
+    IN PVB_POLICY Src
+    )
+{
+    NdisZeroMemory(&VbPolicy, sizeof(VbPolicy));
+    if (Src->Count <= VB_POLICY_MAX_RULES)
+    {
+        NdisMoveMemory(&VbPolicy, Src, sizeof(VbPolicy));
+    }
 }

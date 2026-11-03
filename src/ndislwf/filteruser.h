@@ -101,6 +101,7 @@ typedef struct _FILTER_WRITE_CONFIG
 #define VB_IOCTL_READ_RING  VB_CODE(0x804)
 #define VB_IOCTL_INJECT     VB_CODE(0x805)
 #define VB_IOCTL_CLEAR      VB_CODE(0x806)
+#define VB_IOCTL_POLICY     VB_CODE(0x807)
 
 #define VB_ABI_MAGIC   0x31504256u   /* 'VBP1' */
 #define VB_ABI_VERSION ((1UL << 16) | 0UL)
@@ -152,6 +153,31 @@ typedef struct _VB_INJECT {
     ULONG   Reserved;
     UCHAR   Data[VB_FRAME_MAX];
 } VB_INJECT, *PVB_INJECT;
+
+/* ----------------------------------------------------------------
+ * Policy block TX v1
+ * ---------------------------------------------------------------- */
+#define VB_POLICY_MAX_RULES 16
+#define VB_PROTO_ANY        0
+#define VB_PROTO_TCP        6
+#define VB_PROTO_UDP        17
+#define VB_MATCH_SRC        0x1
+#define VB_MATCH_DST        0x2
+
+typedef struct _VB_POLICY_RULE {
+    ULONG   Proto;      /* 6/17/0=any */
+    ULONG   Match;      /* VB_MATCH_SRC | VB_MATCH_DST (bitwise) */
+    ULONG   Ip;         /* network byte order */
+    ULONG   Mask;
+    USHORT  PortMin;
+    USHORT  PortMax;
+} VB_POLICY_RULE, *PVB_POLICY_RULE;
+
+typedef struct _VB_POLICY {
+    ULONG   Count;      /* <= VB_POLICY_MAX_RULES */
+    ULONG   Enabled;    /* global: atur drop TX */
+    VB_POLICY_RULE Rules[VB_POLICY_MAX_RULES];
+} VB_POLICY, *PVB_POLICY;
 typedef struct _VB_STATS {
     ULONG64 RxTotal;
     ULONG64 TxTotal;

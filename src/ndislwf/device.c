@@ -403,6 +403,23 @@ FilterDeviceIoControl(
             break;
         }
 
+        case VB_IOCTL_POLICY:
+        {
+            PVB_POLICY pp = (PVB_POLICY)Irp->AssociatedIrp.SystemBuffer;
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+
+            if (InLen != sizeof(VB_POLICY) || pp->Count > VB_POLICY_MAX_RULES)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            VbPolicySet(pp);
+            Status = STATUS_SUCCESS;
+            InfoLength = 0;
+            break;
+        }
+
         case VB_IOCTL_CLEAR:
         {
             FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
