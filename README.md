@@ -1,8 +1,7 @@
 # ndislwf -- NDIS 6 LightWeight Filter
 
 Driver filter passthrough NDIS 6.30 dengan kontrol device (`\\.\ndislwf`),
-ring capture/inject, dan kebijakan blok TX. Menyatu dengan CLI Python/Rust
-di proyek `l2split` (client gateway).
+ring capture/inject, dan kebijakan blok TX.
 
 ## Struktur
 
@@ -10,7 +9,6 @@ di proyek `l2split` (client gateway).
 src/ndislwf/      driver kernel (C, WDK/MSVC, x64 Release)
 src/vbbridge/     transport user-mode C ABI (vbbridge.dll)
 src/installer/    install.ps1 / uninstall.ps1 + artifact build
-src/vbclient      Rust CLI (ada di repo terpisah, E:\project\l2split)
 ```
 
 ## Build (Windows, EWDK 10.0.26100)
@@ -31,18 +29,10 @@ test-signed:
 bcdedit /set testsigning on   (boot ulang)
 ```
 
-## Kontrol (contoh CLI vpnbypass)
+## Kontrol
 
-```
-vpnbypass driver                 enum adapter + MAC
-vpnbypass stats                  statistik passthrough/capture/inject
-vpnbypass mode --rx --tx         aktifkan capture RX+TX adapter 0
-vpnbypass ring --n 8 --hex       drain ring + hexdump
-vpnbypass ringd --secs 10        drain ring tiap 500 ms selama 10 dtk
-vpnbypass inject arp_req.bin     kirim frame mentah via adapter
-vpnbypass policy --on --dst 10.0.0.1 --port 53 --tcp   blok TX
-vpnbypass policy --off           matikan kebijakan
-```
+Buka device `\\.\ndislwf` dan kirim ioctl sesuai bagian kontrak ioctl di bawah.
+Transport user-mode C ABI tersedia di `src/vbbridge` (vbbridge.dll, 10 fungsi).
 
 ## Kontrak ioctl
 
@@ -60,4 +50,4 @@ Semua METHOD_BUFFERED, access FILE_ANY_ACCESS, device 0x8900:
 ```
 
 Definisi struct lengkap: `src/ndislwf/filteruser.h` (kernel) dan
-`src/vbbridge/vbbridge.h` (user-mode C) + `src/vbclient.rs` (Rust).
+`src/vbbridge/vbbridge.h` (user-mode C).
