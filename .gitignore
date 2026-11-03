@@ -11,7 +11,7 @@ x64/
 *.rc_ignored
 ipch/
 .vs/
-src/vbbridge/build/
+src/nlbridge/build/
 
 # third-party reference clones (not our code)
 re/

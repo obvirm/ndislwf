@@ -53,18 +53,18 @@ extern FILTER_LOCK         FilterListLock;
 extern LIST_ENTRY          FilterModuleList;
 
 /* v1: ring capture/inject (filter.c) */
-VOID        VbRingInit(VOID);
-VOID        VbRingUninit(VOID);
-BOOLEAN     VbPolicyTxBlocked(PUCHAR Data, ULONG Len);
-BOOLEAN     VbPolicyTxBlockedMac(PUCHAR Data);
-VOID        VbPolicySet(const PVB_POLICY Src);
-VOID        VbRingUninit(VOID);
-VOID        VbInjectInit(VOID);
-VOID        VbInjectUninit(VOID);
-BOOLEAN     VbInjectComplete(PNET_BUFFER_LIST Nbl);
-NDIS_STATUS VbInjectTx(PUCHAR Data, ULONG Len);
-ULONG       VbDrainAll(PVB_RING_ENTRY Out, ULONG Max);
-VOID        VbRingCapture(VB_RING_ENTRY* Ring,
+VOID        NlRingInit(VOID);
+VOID        NlRingUninit(VOID);
+BOOLEAN     NlPolicyTxBlocked(PUCHAR Data, ULONG Len);
+BOOLEAN     NlPolicyTxBlockedMac(PUCHAR Data);
+VOID        NlPolicySet(const PNL_POLICY Src);
+VOID        NlRingUninit(VOID);
+VOID        NlInjectInit(VOID);
+VOID        NlInjectUninit(VOID);
+BOOLEAN     NlInjectComplete(PNET_BUFFER_LIST Nbl);
+NDIS_STATUS NlInjectTx(PUCHAR Data, ULONG Len);
+ULONG       NlDrainAll(PNL_RING_ENTRY Out, ULONG Max);
+VOID        NlRingCapture(NL_RING_ENTRY* Ring,
                           PKSPIN_LOCK Lock,
                           volatile LONG* Head,
                           volatile LONG* Tail,
@@ -72,21 +72,21 @@ VOID        VbRingCapture(VB_RING_ENTRY* Ring,
                           PUCHAR Data,
                           ULONG Len,
                           ULONG Flags);
-ULONG       VbRingDrain(VB_RING_ENTRY* Ring,
+ULONG       NlRingDrain(NL_RING_ENTRY* Ring,
                          PKSPIN_LOCK Lock,
                          volatile LONG* Head,
                          volatile LONG* Tail,
-                         PVB_RING_ENTRY Out,
+                         PNL_RING_ENTRY Out,
                          ULONG Max);
 
-extern volatile ULONG      VbTxDrop;
-extern volatile ULONG      VbRxDrop;
-extern volatile LONG64     VbCapTx;
-extern volatile LONG64     VbCapRx;
-extern volatile LONG64     VbInj;
-extern volatile LONG64     VbBlocked;
+extern volatile ULONG      NlTxDrop;
+extern volatile ULONG      NlRxDrop;
+extern volatile LONG64     NlCapTx;
+extern volatile LONG64     NlCapRx;
+extern volatile LONG64     NlInj;
+extern volatile LONG64     NlBlocked;
 
-extern LONG                VbInstanceCounter;
+extern LONG                NlInstanceCounter;
 
 
 
@@ -372,14 +372,14 @@ typedef struct _MS_FILTER
 
     /* v1: state ringan per-filter-instance (ada per adapter).
      * counter_increment via InterlockedAdd64 — IRQL dpc-safe.
-     * mode flags: VB_MODE_RX|VB_MODE_TX (SET_MODE dari user-mode) */
-    volatile LONG64                 VbRxBytes;
-    volatile LONG64                 VbTxBytes;
-    volatile UINT32                 VbMode;
-    volatile UINT32                 VbIdx;    /* ordinal adapter stabil sesi */
-    UINT32                          VbMedium; /* NdisMedium802_3 = 0 */
-    UINT8                           VbMac[6];
-    UINT8                           VbMacPad[2];
+     * mode flags: NL_MODE_RX|NL_MODE_TX (SET_MODE dari user-mode) */
+    volatile LONG64                 NlRxBytes;
+    volatile LONG64                 NlTxBytes;
+    volatile UINT32                 NlMode;
+    volatile UINT32                 NlIdx;    /* ordinal adapter stabil sesi */
+    UINT32                          NlMedium; /* NdisMedium802_3 = 0 */
+    UINT8                           NlMac[6];
+    UINT8                           NlMacPad[2];
 
 }MS_FILTER, * PMS_FILTER;
 

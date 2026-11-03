@@ -7,7 +7,7 @@ ring capture/inject, dan kebijakan blok TX.
 
 ```
 src/ndislwf/      driver kernel (C, WDK/MSVC, x64 Release)
-src/vbbridge/     transport user-mode C ABI (vbbridge.dll)
+src/nlbridge/     transport user-mode C ABI (nlbridge.dll)
 src/installer/    install.ps1 / uninstall.ps1 + artifact build
 ```
 
@@ -32,7 +32,7 @@ bcdedit /set testsigning on   (boot ulang)
 ## Kontrol
 
 Buka device `\\.\ndislwf` dan kirim ioctl sesuai bagian kontrak ioctl di bawah.
-Transport user-mode C ABI tersedia di `src/vbbridge` (vbbridge.dll, 10 fungsi).
+Transport user-mode C ABI tersedia di `src/nlbridge` (nlbridge.dll, 10 fungsi).
 
 ## Kontrak ioctl
 
@@ -40,14 +40,14 @@ Semua METHOD_BUFFERED, access FILE_ANY_ACCESS, device 0x8900:
 
 ```
 0x89002000 VERSION
-0x89002004 ENUM_ADPT    (out: [VB_ADAPTER x n], 544 B per entri)
-0x89002008 SET_MODE     (in: VB_MODE = idx+flags; flag 1=rx 2=tx)
-0x8900200C STATS        (out: VB_STATS = 56 B, capture penuh)
-0x89002010 READ_RING    (out: [u32 count][VB_RING_ENTRY x count], 1524 B/entri)
-0x89002014 INJECT       (in:  VB_INJECT = len+reserved+data[1514])
+0x89002004 ENUM_ADPT    (out: [NL_ADAPTER x n], 544 B per entri)
+0x89002008 SET_MODE     (in: NL_MODE = idx+flags; flag 1=rx 2=tx)
+0x8900200C STATS        (out: NL_STATS = 56 B, capture penuh)
+0x89002010 READ_RING    (out: [u32 count][NL_RING_ENTRY x count], 1524 B/entri)
+0x89002014 INJECT       (in:  NL_INJECT = len+reserved+data[1514])
 0x89002018 CLEAR        (reset counter capture)
-0x8900201C POLICY       (in:  VB_POLICY = count+enabled+rules[16])
+0x8900201C POLICY       (in:  NL_POLICY = count+enabled+rules[16])
 ```
 
 Definisi struct lengkap: `src/ndislwf/filteruser.h` (kernel) dan
-`src/vbbridge/vbbridge.h` (user-mode C).
+`src/nlbridge/nlbridge.h` (user-mode C).

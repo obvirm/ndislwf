@@ -232,12 +232,12 @@ FilterDeviceIoControl(
             break;
 
 
-        case VB_IOCTL_VERSION:
+        case NL_IOCTL_VERSION:
         {
-            VB_VERSION v;
-            v.Magic = VB_ABI_MAGIC;
-            v.Version = VB_ABI_VERSION;
-            InfoLength = sizeof(VB_VERSION);
+            NL_VERSION v;
+            v.Magic = NL_ABI_MAGIC;
+            v.Version = NL_ABI_VERSION;
+            InfoLength = sizeof(NL_VERSION);
             if (IrpSp->Parameters.DeviceIoControl.OutputBufferLength >= InfoLength)
             {
                 NdisMoveMemory(Irp->AssociatedIrp.SystemBuffer, &v, sizeof(v));
@@ -250,9 +250,9 @@ FilterDeviceIoControl(
             break;
         }
 
-        case VB_IOCTL_ENUM_ADPT:
+        case NL_IOCTL_ENUM_ADPT:
         {
-            PVB_ADAPTER pas = (PVB_ADAPTER)Irp->AssociatedIrp.SystemBuffer;
+            PNL_ADAPTER pas = (PNL_ADAPTER)Irp->AssociatedIrp.SystemBuffer;
             ULONG OutLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
             ULONG idx = 0;
 
@@ -260,20 +260,20 @@ FilterDeviceIoControl(
             for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
             {
                 PMS_FILTER pF = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
-                PVB_ADAPTER a;
+                PNL_ADAPTER a;
                 ULONG cch;
 
-                if ((ULONG)OutLen < (idx + 1) * sizeof(VB_ADAPTER)) { break; }
+                if ((ULONG)OutLen < (idx + 1) * sizeof(NL_ADAPTER)) { break; }
                 a = &pas[idx];
 
-                NdisZeroMemory(a, sizeof(VB_ADAPTER));
+                NdisZeroMemory(a, sizeof(NL_ADAPTER));
                 a->Index = idx;
-                a->Flags = (pF->State == FilterRunning) ? VB_FLAG_RUNNING : 0;
-                a->Medium = pF->VbMedium;
-                NdisMoveMemory(a->Mac, pF->VbMac, 6);
+                a->Flags = (pF->State == FilterRunning) ? NL_FLAG_RUNNING : 0;
+                a->Medium = pF->NlMedium;
+                NdisMoveMemory(a->Mac, pF->NlMac, 6);
 
                 cch = pF->FilterModuleName.Length / sizeof(WCHAR);
-                if (cch > VB_IFNAME_MAX - 1) { cch = VB_IFNAME_MAX - 1; }
+                if (cch > NL_IFNAME_MAX - 1) { cch = NL_IFNAME_MAX - 1; }
                 NdisMoveMemory(a->IfName, pF->FilterModuleName.Buffer, cch * sizeof(WCHAR));
                 a->IfName[cch] = 0;
 
@@ -281,17 +281,17 @@ FilterDeviceIoControl(
             }
             FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
-            InfoLength = idx * sizeof(VB_ADAPTER);
+            InfoLength = idx * sizeof(NL_ADAPTER);
             Status = STATUS_SUCCESS;
             break;
         }
 
-        case VB_IOCTL_SET_MODE:
+        case NL_IOCTL_SET_MODE:
         {
-            PVB_MODE pm = (PVB_MODE)Irp->AssociatedIrp.SystemBuffer;
+            PNL_MODE pm = (PNL_MODE)Irp->AssociatedIrp.SystemBuffer;
             ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
 
-            if (InLen != sizeof(VB_MODE))
+            if (InLen != sizeof(NL_MODE))
             {
                 Status = STATUS_INVALID_PARAMETER;
                 break;
@@ -307,7 +307,7 @@ FilterDeviceIoControl(
                     PMS_FILTER pF = CONTAINING_RECORD(l, MS_FILTER, FilterModuleLink);
                     if (ordinal == pm->AdapterIndex)
                     {
-                        InterlockedExchange((volatile LONG *)&pF->VbMode, (LONG)pm->Flags);
+                        InterlockedExchange((volatile LONG *)&pF->NlMode, (LONG)pm->Flags);
                         found = TRUE;
                         break;
                     }
@@ -319,39 +319,39 @@ FilterDeviceIoControl(
             break;
         }
 
-        case VB_IOCTL_STATS:
+        case NL_IOCTL_STATS:
         {
-            PVB_STATS ps = (PVB_STATS)Irp->AssociatedIrp.SystemBuffer;
+            PNL_STATS ps = (PNL_STATS)Irp->AssociatedIrp.SystemBuffer;
             LONG64 rx = 0, tx = 0, capRx = 0, capTx = 0, inj = 0;
             ULONG units = 0;
 
-            capRx = VbCapRx;
-            capTx = VbCapTx;
-            inj = VbInj;
+            capRx = NlCapRx;
+            capTx = NlCapTx;
+            inj = NlInj;
 
             FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
             for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
             {
                 PMS_FILTER pF = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
-                rx += pF->VbRxBytes;
-                tx += pF->VbTxBytes;
+                rx += pF->NlRxBytes;
+                tx += pF->NlTxBytes;
                 units++;
             }
             FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
-            InfoLength = sizeof(VB_STATS);
+            InfoLength = sizeof(NL_STATS);
             if (IrpSp->Parameters.DeviceIoControl.OutputBufferLength >= InfoLength)
             {
-                NdisZeroMemory(ps, sizeof(VB_STATS));
+                NdisZeroMemory(ps, sizeof(NL_STATS));
                 ps->RxTotal = (UINT64)rx;
                 ps->TxTotal = (UINT64)tx;
                 ps->RxCaptured = (UINT64)capRx;
                 ps->TxCaptured = (UINT64)capTx;
                 ps->Injected = (UINT64)inj;
-                ps->Dropped = (UINT64)InterlockedOr((volatile LONG *)&VbTxDrop, 0)
-                            + (UINT64)InterlockedOr((volatile LONG *)&VbRxDrop, 0);
+                ps->Dropped = (UINT64)InterlockedOr((volatile LONG *)&NlTxDrop, 0)
+                            + (UINT64)InterlockedOr((volatile LONG *)&NlRxDrop, 0);
                 ps->ActiveUnits = units;
-                ps->AbiVersion = VB_ABI_VERSION;
+                ps->AbiVersion = NL_ABI_VERSION;
                 Status = STATUS_SUCCESS;
             }
             else
@@ -361,7 +361,7 @@ FilterDeviceIoControl(
             break;
         }
 
-        case VB_IOCTL_READ_RING:
+        case NL_IOCTL_READ_RING:
         {
             PUCHAR ob = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
             ULONG OutLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
@@ -374,28 +374,28 @@ FilterDeviceIoControl(
                 break;
             }
 
-            Max = (OutLen - sizeof(ULONG)) / sizeof(VB_RING_ENTRY);
-            cnt = VbDrainAll((PVB_RING_ENTRY)(ob + sizeof(ULONG)), Max);
+            Max = (OutLen - sizeof(ULONG)) / sizeof(NL_RING_ENTRY);
+            cnt = NlDrainAll((PNL_RING_ENTRY)(ob + sizeof(ULONG)), Max);
 
             *(ULONG *)ob = cnt;
-            InfoLength = sizeof(ULONG) + cnt * sizeof(VB_RING_ENTRY);
+            InfoLength = sizeof(ULONG) + cnt * sizeof(NL_RING_ENTRY);
             Status = STATUS_SUCCESS;
             break;
         }
 
-        case VB_IOCTL_INJECT:
+        case NL_IOCTL_INJECT:
         {
-            PVB_INJECT pj = (PVB_INJECT)Irp->AssociatedIrp.SystemBuffer;
+            PNL_INJECT pj = (PNL_INJECT)Irp->AssociatedIrp.SystemBuffer;
             ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
             NDIS_STATUS st;
 
-            if (InLen < sizeof(VB_INJECT) || pj->Len == 0 || pj->Len > VB_FRAME_MAX)
+            if (InLen < sizeof(NL_INJECT) || pj->Len == 0 || pj->Len > NL_FRAME_MAX)
             {
                 Status = STATUS_INVALID_PARAMETER;
                 break;
             }
 
-            st = VbInjectTx(pj->Data, pj->Len);
+            st = NlInjectTx(pj->Data, pj->Len);
             Status = (st == NDIS_STATUS_SUCCESS) ? STATUS_SUCCESS
                    : (st == NDIS_STATUS_RESOURCES) ? STATUS_INSUFFICIENT_RESOURCES
                    : STATUS_INVALID_PARAMETER;
@@ -403,36 +403,36 @@ FilterDeviceIoControl(
             break;
         }
 
-        case VB_IOCTL_POLICY:
+        case NL_IOCTL_POLICY:
         {
-            PVB_POLICY pp = (PVB_POLICY)Irp->AssociatedIrp.SystemBuffer;
+            PNL_POLICY pp = (PNL_POLICY)Irp->AssociatedIrp.SystemBuffer;
             ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
 
-            if (InLen != sizeof(VB_POLICY) || pp->Count > VB_POLICY_MAX_RULES)
+            if (InLen != sizeof(NL_POLICY) || pp->Count > NL_POLICY_MAX_RULES)
             {
                 Status = STATUS_INVALID_PARAMETER;
                 break;
             }
 
-            VbPolicySet(pp);
+            NlPolicySet(pp);
             Status = STATUS_SUCCESS;
             InfoLength = 0;
             break;
         }
 
-        case VB_IOCTL_CLEAR:
+        case NL_IOCTL_CLEAR:
         {
             FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
             for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
             {
                 PMS_FILTER pF = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
-                InterlockedExchange64(&pF->VbRxBytes, 0);
-                InterlockedExchange64(&pF->VbTxBytes, 0);
+                InterlockedExchange64(&pF->NlRxBytes, 0);
+                InterlockedExchange64(&pF->NlTxBytes, 0);
             }
             FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
-            VbTxDrop = 0;
-            VbRxDrop = 0;
+            NlTxDrop = 0;
+            NlRxDrop = 0;
             Status = STATUS_SUCCESS;
             InfoLength = 0;
             break;

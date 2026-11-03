@@ -91,96 +91,96 @@ typedef struct _FILTER_WRITE_CONFIG
  * Blok kontrak kontrol v1 - device 0x8900
  * CTL_CODE: dev<<16 | acc<<14 | fn<<2 | met
  * ---------------------------------------------------------------- */
-#define VB_DEV_TYPE   0x8900
-#define VB_CODE(fn)   ((VB_DEV_TYPE << 16) | (FILE_ANY_ACCESS << 14) | ((fn) << 2) | METHOD_BUFFERED)
+#define NL_DEV_TYPE   0x8900
+#define NL_CODE(fn)   ((NL_DEV_TYPE << 16) | (FILE_ANY_ACCESS << 14) | ((fn) << 2) | METHOD_BUFFERED)
 
-#define VB_IOCTL_VERSION    VB_CODE(0x800)
-#define VB_IOCTL_ENUM_ADPT  VB_CODE(0x801)
-#define VB_IOCTL_SET_MODE   VB_CODE(0x802)
-#define VB_IOCTL_STATS      VB_CODE(0x803)
-#define VB_IOCTL_READ_RING  VB_CODE(0x804)
-#define VB_IOCTL_INJECT     VB_CODE(0x805)
-#define VB_IOCTL_CLEAR      VB_CODE(0x806)
-#define VB_IOCTL_POLICY     VB_CODE(0x807)
+#define NL_IOCTL_VERSION    NL_CODE(0x800)
+#define NL_IOCTL_ENUM_ADPT  NL_CODE(0x801)
+#define NL_IOCTL_SET_MODE   NL_CODE(0x802)
+#define NL_IOCTL_STATS      NL_CODE(0x803)
+#define NL_IOCTL_READ_RING  NL_CODE(0x804)
+#define NL_IOCTL_INJECT     NL_CODE(0x805)
+#define NL_IOCTL_CLEAR      NL_CODE(0x806)
+#define NL_IOCTL_POLICY     NL_CODE(0x807)
 
-#define VB_ABI_MAGIC   0x31504256u   /* 'VBP1' */
-#define VB_ABI_VERSION ((1UL << 16) | 0UL)
+#define NL_ABI_MAGIC   0x31504C4Eu   /* 'NLP1' */
+#define NL_ABI_VERSION ((1UL << 16) | 0UL)
 
-#define VB_FLAG_RUNNING   0x1
-#define VB_MODE_RX        0x1
-#define VB_MODE_TX        0x2
+#define NL_FLAG_RUNNING   0x1
+#define NL_MODE_RX        0x1
+#define NL_MODE_TX        0x2
 
-typedef struct _VB_VERSION {
+typedef struct _NL_VERSION {
     ULONG   Magic;
     ULONG   Version;
-} VB_VERSION, *PVB_VERSION;
+} NL_VERSION, *PNL_VERSION;
 
-#define VB_IFNAME_MAX 260
-#define VB_MAX_ADAPTERS 64
+#define NL_IFNAME_MAX 260
+#define NL_MAX_ADAPTERS 64
 
-typedef struct _VB_ADAPTER {
+typedef struct _NL_ADAPTER {
     ULONG   Index;
     ULONG   Medium;
-    ULONG   Flags;         /* VB_FLAG_RUNNING */
+    ULONG   Flags;         /* NL_FLAG_RUNNING */
     ULONG   Reserved;
     UCHAR   Mac[6];
     UCHAR   Pad2[2];
-    WCHAR   IfName[VB_IFNAME_MAX]; /* UTF-16, null-terminated */
-} VB_ADAPTER, *PVB_ADAPTER;
+    WCHAR   IfName[NL_IFNAME_MAX]; /* UTF-16, null-terminated */
+} NL_ADAPTER, *PNL_ADAPTER;
 
-typedef struct _VB_MODE {
+typedef struct _NL_MODE {
     ULONG   AdapterIndex;
-    ULONG   Flags;         /* VB_MODE_RX | VB_MODE_TX */
-} VB_MODE, *PVB_MODE;
+    ULONG   Flags;         /* NL_MODE_RX | NL_MODE_TX */
+} NL_MODE, *PNL_MODE;
 
 
 /* ----------------------------------------------------------------
  * Ring capture/inject v1
  * ---------------------------------------------------------------- */
-#define VB_FRAME_MAX        1514
-#define VB_RING_ENTRIES     1024
-#define VB_RING_TX          0x1
-#define VB_RING_RX          0x2
+#define NL_FRAME_MAX        1514
+#define NL_RING_ENTRIES     1024
+#define NL_RING_TX          0x1
+#define NL_RING_RX          0x2
 
-typedef struct _VB_RING_ENTRY {
+typedef struct _NL_RING_ENTRY {
     ULONG   Len;            /* byte efektif di Data */
-    ULONG   Flags;          /* VB_RING_TX dari TX path, VB_RING_RX dari RX path */
-    UCHAR   Data[VB_FRAME_MAX];
-} VB_RING_ENTRY, *PVB_RING_ENTRY;
+    ULONG   Flags;          /* NL_RING_TX dari TX path, NL_RING_RX dari RX path */
+    UCHAR   Data[NL_FRAME_MAX];
+} NL_RING_ENTRY, *PNL_RING_ENTRY;
 
-typedef struct _VB_INJECT {
+typedef struct _NL_INJECT {
     ULONG   Len;
     ULONG   Reserved;
-    UCHAR   Data[VB_FRAME_MAX];
-} VB_INJECT, *PVB_INJECT;
+    UCHAR   Data[NL_FRAME_MAX];
+} NL_INJECT, *PNL_INJECT;
 
 /* ----------------------------------------------------------------
  * Policy block TX v1
  * ---------------------------------------------------------------- */
-#define VB_POLICY_MAX_RULES 16
-#define VB_PROTO_ANY        0
-#define VB_PROTO_TCP        6
-#define VB_PROTO_UDP        17
-#define VB_MATCH_SRC        0x1
-#define VB_MATCH_DST        0x2
-#define VB_MATCH_DSTMAC     0x4
+#define NL_POLICY_MAX_RULES 16
+#define NL_PROTO_ANY        0
+#define NL_PROTO_TCP        6
+#define NL_PROTO_UDP        17
+#define NL_MATCH_SRC        0x1
+#define NL_MATCH_DST        0x2
+#define NL_MATCH_DSTMAC     0x4
 
-typedef struct _VB_POLICY_RULE {
+typedef struct _NL_POLICY_RULE {
     ULONG   Proto;      /* 6/17/0=any */
-    ULONG   Match;      /* VB_MATCH_* (bitwise) */
+    ULONG   Match;      /* NL_MATCH_* (bitwise) */
     ULONG   Ip;         /* network byte order */
     ULONG   Mask;
     USHORT  PortMin;
     USHORT  PortMax;
     UCHAR   DstMac[6];
-} VB_POLICY_RULE, *PVB_POLICY_RULE;
+} NL_POLICY_RULE, *PNL_POLICY_RULE;
 
-typedef struct _VB_POLICY {
-    ULONG   Count;      /* <= VB_POLICY_MAX_RULES */
+typedef struct _NL_POLICY {
+    ULONG   Count;      /* <= NL_POLICY_MAX_RULES */
     ULONG   Enabled;    /* global: atur drop TX */
-    VB_POLICY_RULE Rules[VB_POLICY_MAX_RULES];
-} VB_POLICY, *PVB_POLICY;
-typedef struct _VB_STATS {
+    NL_POLICY_RULE Rules[NL_POLICY_MAX_RULES];
+} NL_POLICY, *PNL_POLICY;
+typedef struct _NL_STATS {
     ULONG64 RxTotal;
     ULONG64 TxTotal;
     ULONG64 RxCaptured;
@@ -189,7 +189,7 @@ typedef struct _VB_STATS {
     ULONG64 Dropped;
     ULONG   ActiveUnits;
     ULONG   AbiVersion;
-} VB_STATS, *PVB_STATS;
+} NL_STATS, *PNL_STATS;
 
 #endif //__FILTERUSER_H__
 
