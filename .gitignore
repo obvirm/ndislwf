@@ -1,6 +1,5 @@
 # internal notes, not published to the repo
 docs/
-src/vbbridge/
 
 # build artifacts
 x64/
@@ -12,6 +11,7 @@ x64/
 *.rc_ignored
 ipch/
 .vs/
+src/vbbridge/build/
 
 # third-party reference clones (not our code)
 re/
