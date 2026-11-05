@@ -102,6 +102,10 @@ typedef struct _FILTER_WRITE_CONFIG
 #define NL_IOCTL_INJECT     NL_CODE(0x805)
 #define NL_IOCTL_CLEAR      NL_CODE(0x806)
 #define NL_IOCTL_POLICY     NL_CODE(0x807)
+/* v2: ring shared-memory zero-copy */
+#define NL_IOCTL_MAP_RING   NL_CODE(0x808)
+#define NL_IOCTL_UNMAP_RING NL_CODE(0x809)
+#define NL_IOCTL_GET_EVENT  NL_CODE(0x80a)
 
 #define NL_ABI_MAGIC   0x31504C4Eu   /* 'NLP1' */
 #define NL_ABI_VERSION ((1UL << 16) | 0UL)
@@ -164,6 +168,8 @@ typedef struct _NL_INJECT {
 #define NL_MATCH_SRC        0x1
 #define NL_MATCH_DST        0x2
 #define NL_MATCH_DSTMAC     0x4
+#define NL_POLICY_EN_TX     0x1     /* bitmask Enabled: drop TX */
+#define NL_POLICY_EN_RX     0x2     /* bit1: drop RX */
 
 typedef struct _NL_POLICY_RULE {
     ULONG   Proto;      /* 6/17/0=any */
@@ -177,7 +183,7 @@ typedef struct _NL_POLICY_RULE {
 
 typedef struct _NL_POLICY {
     ULONG   Count;      /* <= NL_POLICY_MAX_RULES */
-    ULONG   Enabled;    /* global: atur drop TX */
+    ULONG   Enabled;    /* bitmask: bit0 = drop TX, bit1 = drop RX (v2; 1 tetap berarti TX-only) */
     NL_POLICY_RULE Rules[NL_POLICY_MAX_RULES];
 } NL_POLICY, *PNL_POLICY;
 typedef struct _NL_STATS {
@@ -190,6 +196,50 @@ typedef struct _NL_STATS {
     ULONG   ActiveUnits;
     ULONG   AbiVersion;
 } NL_STATS, *PNL_STATS;
+
+/* ----------------------------------------------------------------
+ * v2: ring shared-memory zero-copy per adapter
+ * ----------------------------------------------------------------
+ * Layout buffer usermode (harus disediakan caller NL_IOCTL_MAP_RING,
+ * page-aligned, ukuran >= NL_SHM_SIZE):
+ *   [NL_SHM_HDR 128 B][TX ring][RX ring]
+ *   slot ring = NL_RING_ENTRY (Len/Flags/Data) — layout identik
+ *   dengan READ_RING, jadi app decode sama.
+ * Kernel menulis HEAD slot; app menulis TAIL slot setelah diproses.
+ * Selama buffer ter-mapped, capture kernel menulis langsung ke
+ * memori app (zero-copy); READ_RING hanya aktif di mode internal.
+ */
+#define NL_SHM_MAGIC            0x31534C4e  /* 'NLPs' reversed; unik v2 */
+#define NL_SHM_VERSION          0x1
+#define NL_SHM_HDR_BYTES        128
+#define NL_SHM_TXRING_OFF       NL_SHM_HDR_BYTES
+#define NL_SHM_BYTES            (NL_SHM_TXRING_OFF + (2 * (NL_RING_ENTRIES * sizeof(NL_RING_ENTRY))))
+
+typedef struct _NL_SHM_HDR {
+    ULONG           Magic;              /* NL_SHM_MAGIC */
+    ULONG           Version;            /* NL_SHM_VERSION */
+    ULONG           AdapterIndex;       /* NlIdx adapter tujuan */
+    ULONG           Flags;              /* cek validitas arah (NL_RING_TX|RX) */
+    volatile LONG   TxHead;             /* kernel menulis */
+    volatile LONG   TxTail;             /* app menulis */
+    volatile LONG   RxHead;             /* kernel menulis */
+    volatile LONG   RxTail;             /* app menulis */
+    ULONG           Reserved[4];        /* pad kepala ring ke 64 B */
+    volatile ULONG64 TxBytesMirror;     /* mirror stats (kernel) */
+    volatile ULONG64 RxBytesMirror;
+    volatile ULONG64 CapTxMirror;
+    volatile ULONG64 CapRxMirror;
+} NL_SHM_HDR, *PNL_SHM_HDR;
+
+typedef struct _NL_MAP_RING {
+    ULONG   AdapterIndex;
+    ULONG   Len;                        /* ukuran buffer user (>= NL_SHM_BYTES) */
+    PVOID   UserVa;                     /* page-aligned user buffer */
+} NL_MAP_RING, *PNL_MAP_RING;
+
+typedef struct _NL_EVENT {
+    ULONG64 Handle;                     /* user handle event (SynchronizationEvent) */
+} NL_EVENT, *PNL_EVENT;
 
 #endif //__FILTERUSER_H__
 

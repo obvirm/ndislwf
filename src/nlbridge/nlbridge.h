@@ -28,6 +28,10 @@ extern "C" {
 #define NL_IOC_READ_RING  0x89002010u  /* fn 0x804 */
 #define NL_IOC_INJECT     0x89002014u  /* fn 0x805 */
 #define NL_IOC_CLEAR      0x89002018u  /* fn 0x806 */
+#define NL_IOC_POLICY     0x8900201Cu  /* fn 0x807 (v2) */
+#define NL_IOC_MAP_RING   0x89002020u  /* fn 0x808 (v2) */
+#define NL_IOC_UNMAP_RING 0x89002024u  /* fn 0x809 (v2) */
+#define NL_IOC_GET_EVENT  0x89002028u  /* fn 0x80a (v2) */
 
 #define NL_ABI_MAGIC      0x31504C4Eu  /* 'NLP1' */
 #define NL_ABI_VERSION    0x00010000u  /* v1.0 */
@@ -86,6 +90,68 @@ typedef struct nl_inject {
     uint8_t  data[NL_FRAME_MAX];
 } nl_inject_t;
 
+/* --- v2 ------------------------------------------------------------------- */
+
+#define NL_POLICY_MAX_RULES 16u
+#define NL_PROTO_ANY        0u
+#define NL_PROTO_TCP        6u
+#define NL_PROTO_UDP        17u
+#define NL_MATCH_SRC        0x1u
+#define NL_MATCH_DST        0x2u
+#define NL_MATCH_DSTMAC     0x4u
+#define NL_POLICY_EN_TX     0x1u        /* bitmask enabled: bit0 drop TX */
+#define NL_POLICY_EN_RX     0x2u        /* bit1 drop RX */
+#define NL_SHM_MAGIC        0x31534C4Eu  /* 'NLS1' */
+#define NL_SHM_VERSION      1u
+#define NL_SHM_HDR_BYTES    128u
+#define NL_SHM_TXRING_OFF   NL_SHM_HDR_BYTES
+#define NL_SHM_BYTES        (NL_SHM_TXRING_OFF + (2u * (NL_RING_ENTRIES * 1524u)))
+
+/* 28 byte: satu rule policy */
+typedef struct nl_policy_rule {
+    uint32_t proto;                 /* NL_PROTO_* */
+    uint32_t match;                 /* NL_MATCH_* (bitwise) */
+    uint32_t ip;                    /* network byte order */
+    uint32_t mask;
+    uint16_t port_min;
+    uint16_t port_max;
+    uint8_t  dst_mac[6];
+} nl_policy_rule_t;
+
+/* 456 byte: set policy global */
+typedef struct nl_policy {
+    uint32_t count;                 /* <= NL_POLICY_MAX_RULES */
+    uint32_t enabled;               /* bitmask NL_POLICY_EN_* */
+    nl_policy_rule_t rules[NL_POLICY_MAX_RULES];
+} nl_policy_t;
+
+/* 80 byte struct (band header 128 byte): kepala SHM; head kernel, tail app */
+typedef struct nl_shm_hdr {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t adapter_index;
+    uint32_t flags;
+    volatile int32_t tx_head;       /* kernel menulis */
+    volatile int32_t tx_tail;       /* app menulis */
+    volatile int32_t rx_head;       /* kernel menulis */
+    volatile int32_t rx_tail;       /* app menulis */
+    uint32_t reserved[4];
+    volatile uint64_t tx_bytes_mirror;
+    volatile uint64_t rx_bytes_mirror;
+    volatile uint64_t cap_tx_mirror;
+    volatile uint64_t cap_rx_mirror;
+} nl_shm_hdr_t;
+
+typedef struct nl_map_ring {
+    uint32_t adapter_index;
+    uint32_t len;                   /* >= NL_SHM_BYTES */
+    void*    user_va;               /* page-aligned buffer milik caller */
+} nl_map_ring_t;
+
+typedef struct nl_event {
+    uint64_t handle;                /* user handle (SynchronizationEvent) */
+} nl_event_t;
+
 /* --- API ------------------------------------------------------------------ */
 
 /* Buka \\. \ndislwf. 0 = sukses; selain itu last error Win32. */
@@ -115,6 +181,24 @@ NL_API int  nl_drain_ring(int* tx, int* rx, uint64_t* bytes);
 NL_API int  nl_inject(const void* data, uint32_t len);
 
 NL_API int  nl_clear(void);
+
+/* --- API v2 --------------------------------------------------------------- */
+
+/* Set policy global (block TX/RX). 0 = sukses. */
+NL_API int  nl_policy_set(const nl_policy_t* policy);
+
+/* Map buffer SHM untuk capture zero-copy. virtual_address harus page-aligned
+ * (aloc di nl_shm_alloc) dan len >= NL_SHM_BYTES. Buffer milik caller;
+ * mapping lepas otomatis saat handle device ditutup atau nl_shm_unmap. */
+NL_API void* nl_shm_alloc(void);
+NL_API int   nl_shm_map(uint32_t adapter_index, void* virtual_address, uint32_t len);
+NL_API int   nl_shm_unmap(uint32_t adapter_index);
+
+/* Ambil event kernel->app (SynchronizationEvent) untuk adapter; hasilnya
+ * HANDLE valid di proses caller (pindahkan ke HANDLE, WaitForSingleObject).
+ * Panggilan ulang mengganti event yang berlaku; bila mapping dilepas/map
+ * ulang, ambil event lagi (yang lama basi). */
+NL_API int   nl_shm_event(uint32_t adapter_index, uint64_t* handle);
 
 #ifdef __cplusplus
 }

@@ -6,6 +6,17 @@
 
 #include "precomp.h"
 
+/* event API deprecated? tidak: ZwCreateEvent hanya dideklarasikan di ntifs.h
+ * (bukan ntddk.h); prototipe kita cocok signature ntoskrnl. */
+NTSTATUS
+ZwCreateEvent(
+    OUT PHANDLE             EventHandle,
+    IN ACCESS_MASK          DesiredAccess,
+    IN POBJECT_ATTRIBUTES   ObjectAttributes OPTIONAL,
+    IN EVENT_TYPE           EventType,
+    IN BOOLEAN              InitialState
+    );
+
 
 #pragma NDIS_INIT_FUNCTION(FilterRegisterDevice)
 
@@ -62,7 +73,7 @@ FilterRegisterDevice(
     {
         FilterDeviceExtension = NdisGetDeviceReservedExtension(NdisDeviceObject);
 
-        FilterDeviceExtension->Signature = 'FTDR';
+        FilterDeviceExtension->Signature = 'NLWD';
         FilterDeviceExtension->Handle = FilterDriverHandle;
     }
 
@@ -98,6 +109,7 @@ FilterDispatch(
 {
     PIO_STACK_LOCATION       IrpStack;
     NTSTATUS                 Status = STATUS_SUCCESS;
+    BOOLEAN                  bFalse = FALSE;
 
     UNREFERENCED_PARAMETER(DeviceObject);
 
@@ -112,7 +124,26 @@ FilterDispatch(
             break;
 
         case IRP_MJ_CLOSE:
+        {
+            /* v2: lepas mapping shm + event yang owned file ini (FILE_OBJECT
+             * masih valid di titik ini). NlShmUnmap menangani keduanya. */
+            bFalse = FALSE;
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            {
+                PLIST_ENTRY cLink;
+                for (cLink = FilterModuleList.Flink; cLink != &FilterModuleList; cLink = cLink->Flink)
+                {
+                    PMS_FILTER pF = CONTAINING_RECORD(cLink, MS_FILTER, FilterModuleLink);
+                    if (pF->NlShmOwnerFile == IrpStack->FileObject ||
+                        pF->NlShmEventFile == IrpStack->FileObject)
+                    {
+                        NlShmUnmap(pF);
+                    }
+                }
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
             break;
+        }
 
         default:
             break;
@@ -157,7 +188,7 @@ FilterDeviceIoControl(
 
     FilterDeviceExtension = (PFILTER_DEVICE_EXTENSION)NdisGetDeviceReservedExtension(DeviceObject);
 
-    ASSERT(FilterDeviceExtension->Signature == 'FTDR');
+    ASSERT(FilterDeviceExtension->Signature == 'NLWD');
 
     Irp->IoStatus.Information = 0;
 
@@ -171,15 +202,30 @@ FilterDeviceIoControl(
             InputBuffer = OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
             InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
 
-            pFilter = filterFindFilterModule (InputBuffer, InputBufferLength);
-
-            if (pFilter == NULL)
+            /* cari by nama di bawah list lock + ref (NdisFRestartFilter
+             * dipanggil di luar kunci) */
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
             {
-
-                break;
+                PMS_FILTER pF = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+                if (InputBufferLength >= (ULONG)pF->FilterModuleName.Length &&
+                    NdisEqualMemory(InputBuffer,
+                                    pF->FilterModuleName.Buffer,
+                                    pF->FilterModuleName.Length))
+                {
+                    InterlockedIncrement((volatile LONG *)&pF->RefCount);
+                    pFilter = pF;
+                    break;
+                }
             }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
-            NdisFRestartFilter(pFilter->FilterHandle);
+            if (pFilter != NULL)
+            {
+                NdisFRestartFilter(pFilter->FilterHandle);
+                filterDereferenceModule(pFilter);
+                pFilter = NULL;
+            }
 
             break;
 
@@ -334,6 +380,7 @@ FilterDeviceIoControl(
             }
 
             inj = NlInj;
+            drop += (ULONG)NlBlocked;   /* policy block (global) + ring drop */
 
             FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
             for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
@@ -414,6 +461,11 @@ FilterDeviceIoControl(
                     break;
                 }
             }
+            /* tahan lifetime di luar kunci (drain dipanggil pasca release) */
+            if (pSel != NULL)
+            {
+                InterlockedIncrement((volatile LONG *)&pSel->RefCount);
+            }
             FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
             if (pSel == NULL)
@@ -426,6 +478,7 @@ FilterDeviceIoControl(
 
             Max = (OutLen - sizeof(ULONG)) / sizeof(NL_RING_ENTRY);
             cnt = NlDrainAll(pSel, (PNL_RING_ENTRY)(ob + sizeof(ULONG)), Max);
+            filterDereferenceModule(pSel);
 
             *(ULONG *)ob = cnt;
             InfoLength = sizeof(ULONG) + cnt * sizeof(NL_RING_ENTRY);
@@ -470,6 +523,213 @@ FilterDeviceIoControl(
             break;
         }
 
+        case NL_IOCTL_MAP_RING:
+        {
+            PNL_MAP_RING pm = (PNL_MAP_RING)Irp->AssociatedIrp.SystemBuffer;
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            PLIST_ENTRY ml;
+            NL_SHM_PREP prep;
+            ULONG ordinal = 0;   /* urutan harus cocok ENUM_ADPT/SET_MODE */
+
+            if (InLen != sizeof(NL_MAP_RING) || pm == NULL)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            /* cari adapter + taruh referensi (MmProbeAndLockPages tidak boleh
+             * berada di bawah spinlock, dan module bisa detach walaupun
+             * referensi masih bertahan). */
+            pFilter = NULL;
+            Status = STATUS_DEVICE_NOT_CONNECTED;
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (ml = FilterModuleList.Flink; ml != &FilterModuleList; ml = ml->Flink)
+            {
+                PMS_FILTER pF = CONTAINING_RECORD(ml, MS_FILTER, FilterModuleLink);
+                if (ordinal == pm->AdapterIndex)
+                {
+                    InterlockedIncrement((volatile LONG *)&pF->RefCount);
+                    pFilter = pF;
+                    Status = STATUS_SUCCESS;
+                    break;
+                }
+                ordinal++;
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+
+            if (pFilter == NULL)
+            {
+                Status = STATUS_NOT_FOUND;
+                InfoLength = 0;
+                break;
+            }
+
+            /* bekerja di PASSIVE tanpa kunci apa pun */
+            if (!NlShmPrepare(pm->UserVa, pm->Len, &prep))
+            {
+                filterDereferenceModule(pFilter);
+                Status = STATUS_INVALID_PARAMETER;
+                InfoLength = 0;
+                break;
+            }
+
+            if (NlShmInstall(pFilter, &prep, IrpSp->FileObject))
+            {
+                Status = STATUS_SUCCESS;
+            }
+            else
+            {
+                /* sudah ter-map (busy) atau instance sudah lepas list —
+                 * prep yang tak terpasang wajib dibersihkan. */
+                NlShmPrepareCleanup(&prep);
+                Status = STATUS_DEVICE_BUSY;
+            }
+
+            filterDereferenceModule(pFilter);
+            pFilter = NULL;
+            InfoLength = 0;
+            break;
+        }
+
+        case NL_IOCTL_UNMAP_RING:
+        {
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            UINT32 wantIdx;
+            PLIST_ENTRY ul;
+            ULONG ordinal = 0;
+
+            wantIdx = 0;
+            if (InLen >= sizeof(UINT32) && Irp->AssociatedIrp.SystemBuffer != NULL)
+            {
+                wantIdx = *(volatile UINT32 *)Irp->AssociatedIrp.SystemBuffer;
+            }
+
+            Status = STATUS_NOT_FOUND;
+
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (ul = FilterModuleList.Flink; ul != &FilterModuleList; ul = ul->Flink)
+            {
+                PMS_FILTER pF = CONTAINING_RECORD(ul, MS_FILTER, FilterModuleLink);
+                if (ordinal == wantIdx)
+                {
+                    /* pemilik mapping (jika ada) membuat: UNMAP dari file
+                     * lain ditolak */
+                    if (pF->NlShmOwnerFile != NULL && pF->NlShmOwnerFile != IrpSp->FileObject)
+                    {
+                        Status = STATUS_ACCESS_DENIED;
+                    }
+                    else
+                    {
+                        /* unmap langsung di bawah list lock: seluruh operasi
+                         * gantinya (MmUnlock/deref event) diperbolehkan di
+                         * DISPATCH_LEVEL yang diangkat spinlock ini */
+                        NlShmUnmap(pF);
+                        Status = STATUS_SUCCESS;
+                    }
+                    break;
+                }
+                ordinal++;
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+
+            InfoLength = 0;
+            break;
+        }
+
+        case NL_IOCTL_GET_EVENT:
+        {
+            PNL_EVENT pe = (PNL_EVENT)Irp->AssociatedIrp.SystemBuffer;
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            ULONG OutLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+            HANDLE evUser = NULL;
+            PVOID evObj = NULL, evOld;
+            OBJECT_ATTRIBUTES oa;
+            KIRQL OldIrql;
+            PLIST_ENTRY el;
+            ULONG ordinal = 0;
+            UINT32 wantIdx = 0;
+            PMS_FILTER pSel = NULL;
+
+            if (InLen < sizeof(UINT32) || OutLen < sizeof(NL_EVENT) ||
+                Irp->AssociatedIrp.SystemBuffer == NULL)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            wantIdx = *(volatile UINT32 *)Irp->AssociatedIrp.SystemBuffer;
+
+            FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+            for (el = FilterModuleList.Flink; el != &FilterModuleList; el = el->Flink)
+            {
+                PMS_FILTER pF = CONTAINING_RECORD(el, MS_FILTER, FilterModuleLink);
+                if (ordinal == wantIdx)
+                {
+                    pSel = pF;
+                    break;
+                }
+                ordinal++;
+            }
+            /* tahan lifetime module di luar kunci list (detach minggir). */
+            if (pSel != NULL)
+            {
+                InterlockedIncrement((volatile LONG *)&pSel->RefCount);
+            }
+            FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+
+            if (pSel == NULL)
+            {
+                Status = STATUS_NOT_FOUND;
+                break;
+            }
+
+            /* CREATE event di ring konteks caller (PASSIVE): handle user
+             * berlaku di proses app, objek kernelnya memiliki ref kita. */
+            InitializeObjectAttributes(&oa, NULL, 0, NULL, NULL);
+            Status = ZwCreateEvent(&evUser,
+                                   EVENT_MODIFY_STATE | SYNCHRONIZE,
+                                   &oa,
+                                   SynchronizationEvent,
+                                   FALSE);
+            if (!NT_SUCCESS(Status))
+            {
+                filterDereferenceModule(pSel);
+                break;
+            }
+
+            Status = ObReferenceObjectByHandle(evUser,
+                                               EVENT_MODIFY_STATE,
+                                               *ExEventObjectType,
+                                               UserMode,
+                                               &evObj,
+                                               NULL);
+            if (!NT_SUCCESS(Status))
+            {
+                ZwClose(evUser);
+                filterDereferenceModule(pSel);
+                break;
+            }
+
+            /* ref kernel dipasang di bawah ring lock (capture membaca
+             * NlShmEvent di bawah lock yang sama); ref event lama dilepas
+             * setelah swap agar CALL GET_EVENT ulang tidak bocor. */
+            KeAcquireSpinLock(&pSel->NlTxRingLock, &OldIrql);
+            evOld = pSel->NlShmEvent;
+            pSel->NlShmEvent = (PKEVENT)evObj;
+            pSel->NlShmEventFile = IrpSp->FileObject;
+            KeReleaseSpinLock(&pSel->NlTxRingLock, OldIrql);
+            if (evOld != NULL)
+            {
+                ObDereferenceObject(evOld);
+            }
+
+            filterDereferenceModule(pSel);
+
+            pe->Handle = (ULONG64)(ULONG_PTR)evUser;
+            InfoLength = sizeof(NL_EVENT);
+            Status = STATUS_SUCCESS;
+            break;
+        }
+
         case NL_IOCTL_CLEAR:
         {
             FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
@@ -502,44 +762,6 @@ FilterDeviceIoControl(
     return Status;
 
 
-}
-
-
-_IRQL_requires_max_(DISPATCH_LEVEL)
-PMS_FILTER
-filterFindFilterModule(
-    _In_reads_bytes_(BufferLength)
-         PUCHAR                   Buffer,
-    _In_ ULONG                    BufferLength
-    )
-{
-
-   PMS_FILTER              pFilter;
-   PLIST_ENTRY             Link;
-   BOOLEAN                  bFalse = FALSE;
-
-   FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
-
-   Link = FilterModuleList.Flink;
-
-   while (Link != &FilterModuleList)
-   {
-       pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
-
-       if (BufferLength >= pFilter->FilterModuleName.Length)
-       {
-           if (NdisEqualMemory(Buffer, pFilter->FilterModuleName.Buffer, pFilter->FilterModuleName.Length))
-           {
-               FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
-               return pFilter;
-           }
-       }
-
-       Link = Link->Flink;
-   }
-
-   FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
-   return NULL;
 }
 
 

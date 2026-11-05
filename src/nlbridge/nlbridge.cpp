@@ -209,3 +209,74 @@ NL_API int nl_clear(void)
 {
     return nl_ioctl(NL_IOC_CLEAR, NULL, 0, NULL, 0, NULL);
 }
+
+/* --- API v2 --------------------------------------------------------------- */
+
+static_assert(sizeof(nl_policy_t) == 456, "layout nl_policy harus 456");
+static_assert(sizeof(nl_shm_hdr_t) == 80, "layout nl_shm_hdr harus 80");
+static_assert(NL_SHM_BYTES == 128 + 2u * 1024u * 1524u, "NL_SHM_BYTES harus 3117184");
+
+NL_API int nl_policy_set(const nl_policy_t* policy)
+{
+    if (policy == NULL) { return ERROR_INVALID_PARAMETER; }
+    if (policy->count > NL_POLICY_MAX_RULES) { return ERROR_INVALID_PARAMETER; }
+    nl_policy_t p;
+    memset(&p, 0, sizeof(p));
+    memcpy(&p, policy, sizeof(p));
+    return nl_ioctl(NL_IOC_POLICY, &p, (DWORD)sizeof(p), NULL, 0, NULL);
+}
+
+NL_API void* nl_shm_alloc(void)
+{
+    void* p = VirtualAlloc(NULL, (SIZE_T)NL_SHM_BYTES,
+                           MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    return p;
+}
+
+NL_API int nl_shm_map(uint32_t adapter_index, void* virtual_address, uint32_t len)
+{
+    if (virtual_address == NULL || len < NL_SHM_BYTES ||
+        ((uintptr_t)virtual_address & 0xFFFu) != 0)
+    {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    nl_map_ring_t m;
+    m.adapter_index = adapter_index;
+    m.len = len;
+    m.user_va = virtual_address;
+
+    return nl_ioctl(NL_IOC_MAP_RING, &m, (DWORD)sizeof(m), NULL, 0, NULL);
+}
+
+NL_API int nl_shm_unmap(uint32_t adapter_index)
+{
+    return nl_ioctl(NL_IOC_UNMAP_RING,
+                    &adapter_index, (DWORD)sizeof(adapter_index),
+                    NULL, 0, NULL);
+}
+
+NL_API int nl_shm_event(uint32_t adapter_index, uint64_t* handle)
+{
+    if (handle == NULL) { return ERROR_INVALID_PARAMETER; }
+
+    DWORD ret = 0;
+    nl_event_t out;
+    memset(&out, 0, sizeof(out));
+
+    /* nl_ioctl lancar nl_open jika belum: handle event kernel dibuat di
+     * konteks proses caller (IOCTL PASSIVE di sini). */
+    int e = nl_ioctl(NL_IOC_GET_EVENT,
+                 &adapter_index, (DWORD)sizeof(adapter_index),
+                 &out, (DWORD)sizeof(out), &ret);
+    if (e != 0)
+    {
+        return e;
+    }
+    if (ret < (DWORD)sizeof(out))
+    {
+        return ERROR_READ_FAULT;
+    }
+    *handle = out.handle;
+    return 0;
+}

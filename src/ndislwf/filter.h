@@ -21,9 +21,9 @@ Notes:
 
 // TODO: Customize these to hint at your component for memory leak tracking.
 // These should be treated like a pooltag.
-#define FILTER_REQUEST_ID          'RVPB'
-#define FILTER_ALLOC_TAG           'tliV'
-#define FILTER_TAG                 'dnVP'
+#define FILTER_REQUEST_ID          'QWPN'
+#define FILTER_ALLOC_TAG           'FLtN'
+#define FILTER_TAG                 'NLtW'
 
 // TODO: Specify which version of the NDIS contract you will use here.
 // In many cases, 6.0 is the best choice.  You only need to select a later
@@ -55,15 +55,35 @@ extern LIST_ENTRY          FilterModuleList;
 struct _MS_FILTER;
 VOID        NlRingInit(struct _MS_FILTER *pFilter);
 BOOLEAN     NlPolicyTxBlocked(PUCHAR Data, ULONG Len);
-BOOLEAN     NlPolicyTxBlockedMac(PUCHAR Data);
+VOID        NlTxCapture(struct _MS_FILTER *pFilter, PUCHAR Data, ULONG Len);
+VOID        NlRxCapture(struct _MS_FILTER *pFilter, PUCHAR Data, ULONG Len);
 VOID        NlPolicySet(const PNL_POLICY Src);
 VOID        NlRingUninit(struct _MS_FILTER *pFilter);
 VOID        NlInjectInit(VOID);
 VOID        NlInjectUninit(VOID);
 BOOLEAN     NlInjectComplete(PNET_BUFFER_LIST Nbl);
 NDIS_STATUS NlInjectTx(PUCHAR Data, ULONG Len);
+VOID        NlFlowInit(VOID);
+VOID        NlFlowUninit(VOID);
+/* v2: shared-memory ring.
+ * NlShmPrepare dipanggil PASSIVE tanpa kunci apa pun (lock halaman user
+ * + map kernel); NlShmInstall memasang hasilnya di bawah ring lock, dan
+ * NlShmPrepareCleanup merapikan prep yang gagal dipasang. */
+typedef struct _NL_SHM_PREP
+{
+    PMDL    Mdl;
+    PVOID   Kva;
+} NL_SHM_PREP, *PNL_SHM_PREP;
+
+BOOLEAN     NlShmPrepare(PVOID UserVa, ULONG Len, PNL_SHM_PREP Prep);
+BOOLEAN     NlShmInstall(struct _MS_FILTER *pFilter, PNL_SHM_PREP Prep, PFILE_OBJECT OwnerFile);
+VOID        NlShmPrepareCleanup(PNL_SHM_PREP Prep);
+VOID        NlShmUnmap(struct _MS_FILTER *pFilter);
+VOID        NlShmUnmapAll(void);
+VOID        filterReferenceModule(struct _MS_FILTER *pFilter);
+VOID        filterDereferenceModule(struct _MS_FILTER *pFilter);
 ULONG       NlDrainAll(struct _MS_FILTER *pFilter, PNL_RING_ENTRY Out, ULONG Max);
-VOID        NlRingCapture(NL_RING_ENTRY* Ring,
+BOOLEAN     NlRingCapture(NL_RING_ENTRY* Ring,
                           PKSPIN_LOCK Lock,
                           volatile LONG* Head,
                           volatile LONG* Tail,
@@ -391,6 +411,23 @@ typedef struct _MS_FILTER
     KSPIN_LOCK                      NlTxRingLock;
     KSPIN_LOCK                      NlRxRingLock;
 
+    /* v2: shared-memory ring (zero-copy). Jika NlShmMapped, capture TX/RX
+     * menulis langsung ke buffer usermode; ring internal menunggu dengan
+     * menganggur. Semua akses pointer target dijaga NlTxRingLock/NlRxRingLock. */
+    BOOLEAN                         NlShmMapped;
+    BOOLEAN                         NlDetached;   /* TRUE bila sudah lepas list */
+    PMDL                            NlShmMdl;
+    PVOID                           NlShmKva;
+    PNL_SHM_HDR                     NlShmHdr;
+    PNL_RING_ENTRY                  NlShmTxRing;
+    PNL_RING_ENTRY                  NlShmRxRing;
+    PKEVENT                         NlShmEvent;   /* SignalEvent saat ada capture shm */
+    PFILE_OBJECT                    NlShmEventFile;   /* pemilik handle GET_EVENT */
+    PFILE_OBJECT                    NlShmOwnerFile;
+    /* kepala ring SHM milik kernel (app hanya menulis tail) */
+    volatile LONG                   NlShmTxHead;
+    volatile LONG                   NlShmRxHead;
+
 }MS_FILTER, * PMS_FILTER;
 
 
@@ -477,14 +514,6 @@ FilterDeregisterDevice(
 DRIVER_DISPATCH FilterDispatch;
 
 DRIVER_DISPATCH FilterDeviceIoControl;
-
-_IRQL_requires_max_(DISPATCH_LEVEL)
-PMS_FILTER
-filterFindFilterModule(
-    _In_reads_bytes_(BufferLength)
-         PUCHAR                   Buffer,
-    _In_ ULONG                    BufferLength
-    );
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NDIS_STATUS

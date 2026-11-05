@@ -19,6 +19,17 @@ re/
 # deployment scratch (test-VM payloads)
 pkg/
 
+# new build artifacts (user-mode)
+*.dll
+*.exp
+*.lib
+*.exe
+
 # abandoned Rust-driver scaffold
 driver/
 inf/
+# kernel crash dumps dari eksperimen (berat, lokal saja)
+tests/dumps/
+
+# hasil sementara di guest VM (scratch)
+tests/guest/*.txt
