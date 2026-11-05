@@ -54,7 +54,7 @@ extern LIST_ENTRY          FilterModuleList;
 
 struct _MS_FILTER;
 VOID        NlRingInit(struct _MS_FILTER *pFilter);
-BOOLEAN     NlPolicyTxBlocked(PUCHAR Data, ULONG Len);
+BOOLEAN     NlPolicyEval(PUCHAR Data, ULONG Len, ULONG Dir);
 VOID        NlTxCapture(struct _MS_FILTER *pFilter, PUCHAR Data, ULONG Len);
 VOID        NlRxCapture(struct _MS_FILTER *pFilter, PUCHAR Data, ULONG Len);
 VOID        NlPolicySet(const PNL_POLICY Src);
@@ -63,6 +63,7 @@ VOID        NlInjectInit(VOID);
 VOID        NlInjectUninit(VOID);
 BOOLEAN     NlInjectComplete(PNET_BUFFER_LIST Nbl);
 NDIS_STATUS NlInjectTx(PUCHAR Data, ULONG Len);
+NDIS_STATUS NlInjectRx(PUCHAR Data, ULONG Len);
 VOID        NlFlowInit(VOID);
 VOID        NlFlowUninit(VOID);
 /* v2: shared-memory ring.
@@ -100,6 +101,10 @@ ULONG       NlRingDrain(NL_RING_ENTRY* Ring,
 
 extern volatile LONG64     NlInj;
 extern volatile LONG64     NlBlocked;
+/* v3: block per arah + hit tertinggal per rule (index sesuai rule policy) */
+extern volatile LONG64     NlBlockedTx;
+extern volatile LONG64     NlBlockedRx;
+extern volatile LONG64     NlRuleHits[NL_POLICY_MAX_RULES];
 
 extern LONG                NlInstanceCounter;
 

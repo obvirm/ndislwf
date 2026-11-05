@@ -21,6 +21,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <process.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 #include "nlbridge.h"
 #pragma comment(lib, "nlbridge.lib")
@@ -200,6 +202,31 @@ tCapture(int seconds)
         uint64_t abytes = 0;
         t0 = qps();
         end = t0 + 1000ull * seconds;
+        /* trafik stack TX nyata via UDP socket broadcast — garansi
+         * FilterSendNetBufferLists dipanggil walau guest idle. */
+        {
+            WSADATA wsa;
+            if (WSAStartup(MAKEWORD(2, 2), &wsa) == 0)
+            {
+                SOCKET sd = socket(AF_INET, SOCK_DGRAM, 0);
+                if (sd != INVALID_SOCKET)
+                {
+                    struct sockaddr_in sa;
+                    const char pay[48] = "nlstress-capture-probe";
+                    DWORD br = 1;
+                    (void)setsockopt(sd, SOL_SOCKET, SO_BROADCAST, (char *)&br, sizeof br);
+                    memset(&sa, 0, sizeof sa);
+                    sa.sin_family = AF_INET;
+                    sa.sin_port = htons(47399);
+                    sa.sin_addr.s_addr = 0xFFFFFFFFu;   /* broadcast */
+                    (void)sendto(sd, pay, sizeof pay, 0, (SOCKADDR *)&sa, sizeof sa);
+                    Sleep(150);
+                    (void)sendto(sd, pay, sizeof pay, 0, (SOCKADDR *)&sa, sizeof sa);
+                    closesocket(sd);
+                }
+                WSACleanup();
+            }
+        }
         while (qps() < end) {
             nl_ring_entry_t rb[32];
             int rn = 0;
@@ -313,7 +340,7 @@ tPolicy(void)
 
 static int
 tPolicy2(void)
-/*++  path dst-MAC: NlDmacBlocked (lewat NlPolicyTxBlocked, bypass flow cache).
+/*++  path dst-MAC: NlDmacBlocked (lewat NlPolicyEval, bypass flow cache).
     Rule proto ANY dstmac=MAC_TST; inject 300 dstmac TST (drop) + 200 BC. --*/
 {
     nl_policy_t p;
@@ -346,6 +373,165 @@ tPolicy2(void)
                (unsigned long long)din, (unsigned long long)ddr);
         CHECK("policy2: delta 500 inject", din == 500);
         CHECK("policy2: delta 300 drop", ddr == 300);
+    }
+    return 1;
+}
+
+static int
+injectRxN(uint32_t n, uint8_t ipNext, uint16_t dport, const uint8_t *dmac)
+{
+    uint8_t buf[NL_FRAME_MAX];
+    uint32_t i;
+    int bad = 0;
+    for (i = 0; i < n; ++i) {
+        uint32_t len = buildFrame(buf, 60 + (i % (NL_FRAME_MAX - 60)),
+                                  ipNext, dport, dmac, i);
+        if (nl_inject_rx(buf, len) != 0) ++bad;
+    }
+    return bad;
+}
+
+static int
+tInjectRx(void)
+/*++  Inject RX (replay, ioctl v3): 400 frame UDP suap jalur RX; semua ioctl
+     OK dan counter injected naik 400; stack tetap hidup sesudahnya. --*/
+{
+    nl_stats_t a, b;
+    int bad;
+
+    memset(&a, 0, sizeof a); memset(&b, 0, sizeof b);
+    (void)nl_stats(NULL, &a);
+    bad = injectRxN(400, NL_PROTO_UDP, 43521, MAC_BC);
+    Sleep(200);
+    (void)nl_stats(NULL, &b);
+    {
+        uint64_t din = b.injected - a.injected;
+        printf("      injrx: bad=%d deltaInj=%llu (harap 400) drop=%llu\n",
+               bad, (unsigned long long)din,
+               (unsigned long long)(b.dropped - a.dropped));
+        CHECK("injrx: semua OK + counter", bad == 0 && din == 400);
+        CHECK("injrx: stack hidup post", b.active_units > 0);
+    }
+    return bad == 0 && (b.injected - a.injected) == 400;
+}
+
+static int
+tRuleHits(void)
+/*++  Hit per rule (ioctl v3): rule0 UDP dport 42001, rule1 dstmac MAC_TST.
+     100 inj TX dport 42001 BC  -> hits[0] +100 (flow path, idx 0).
+     100 inj TX dport 42002 TST -> hits[1] +100 (dstmac menang).
+     100 inj TX dport 42003 BC  -> tidak block (hits rontok 0). BlockTx +200. --*/
+{
+    nl_policy_t p;
+    nl_stats_t s;
+    nl_rule_hits_t h0, h1;
+    int ret;
+
+    memset(&h0, 0, sizeof h0);
+    ret = nl_rule_hits(&h0);
+    CHECK("hits: ioctl ok", ret == 0);
+    if (ret != 0) return 0;
+
+    memset(&p, 0, sizeof p);
+    p.count = 2;
+    p.enabled = NL_POLICY_EN_TX;
+    p.rules[0].proto    = NL_PROTO_UDP;
+    p.rules[0].match    = NL_MATCH_DST;
+    p.rules[0].ip       = 0;
+    p.rules[0].mask     = 0;
+    p.rules[0].port_min = 42001;
+    p.rules[0].port_max = 42001;
+    p.rules[1].proto    = NL_PROTO_ANY;
+    p.rules[1].match    = NL_MATCH_DSTMAC;
+    memcpy(p.rules[1].dst_mac, MAC_TST, 6);
+
+    ret = nl_policy_set(&p);
+    printf("      hits: nl_policy_set (2 rule) ret=%d\n", ret);
+    CHECK("hits: set ok", ret == 0);
+    Sleep(50);
+    (void)injectN(100, NL_PROTO_UDP, 42001, MAC_BC);
+    (void)injectN(100, NL_PROTO_UDP, 42002, MAC_TST);
+    (void)injectN(100, NL_PROTO_UDP, 42003, MAC_BC);
+    Sleep(100);
+    p.enabled = 0;
+    (void)nl_policy_set(&p);
+
+    memset(&h1, 0, sizeof h1);
+    ret = nl_rule_hits(&h1);
+    memset(&s, 0, sizeof s);
+    (void)nl_stats(NULL, &s);
+    {
+        uint64_t h0v = h1.hits[0] - h0.hits[0];
+        uint64_t h1v = h1.hits[1] - h0.hits[1];
+        uint64_t h2v = h1.hits[2] - h0.hits[2];
+        uint64_t btx = h1.block_tx - h0.block_tx;
+        printf("      hits: r0=%llu r1=%llu r2=%llu blockTx=%llu (harap 100/100/0/200)\n",
+               (unsigned long long)h0v, (unsigned long long)h1v,
+               (unsigned long long)h2v, (unsigned long long)btx);
+        CHECK("hits: rule0 100", h0v == 100);
+        CHECK("hits: rule1 100", h1v == 100);
+        CHECK("hits: rule2 0",   h2v == 0);
+        CHECK("hits: blockTx 200", btx == 200);
+    }
+    return 1;
+}
+
+static int
+tPolicyRx(void)
+/*++  Blok RX deterministik lewat inject RX (replay): policy EN_RX rule0
+     UDP dport 41001. 300 injRX dport 41001 diblok SEBELUM indicate
+     (NlInj +400, blockRx +300, hits[0] +300); 100 injRX dport 41002
+     melewati policy dan masuk stack. --*/
+{
+    nl_policy_t p;
+    nl_stats_t a, b;
+    nl_rule_hits_t h0, h1;
+    int ret, bad;
+
+    memset(&h0, 0, sizeof h0);
+    (void)nl_rule_hits(&h0);
+
+    memset(&p, 0, sizeof p);
+    p.count = 1;
+    p.enabled = NL_POLICY_EN_RX;
+    p.rules[0].proto    = NL_PROTO_UDP;
+    p.rules[0].match    = NL_MATCH_DST;
+    p.rules[0].ip       = 0;
+    p.rules[0].mask     = 0;
+    p.rules[0].port_min = 41001;
+    p.rules[0].port_max = 41001;
+
+    memset(&a, 0, sizeof a);
+    (void)nl_stats(NULL, &a);
+    ret = nl_policy_set(&p);
+    printf("      policyrx: nl_policy_set (RX UDP dport 41001) ret=%d\n", ret);
+    CHECK("policyrx: set ok", ret == 0);
+    Sleep(50);
+
+    bad  = injectRxN(300, NL_PROTO_UDP, 41001, MAC_BC);  /* harus blok */
+    bad += injectRxN(100, NL_PROTO_UDP, 41002, MAC_BC);  /* masuk stack */
+    Sleep(200);
+
+    p.enabled = 0;
+    (void)nl_policy_set(&p);
+
+    memset(&b, 0, sizeof b);
+    (void)nl_stats(NULL, &b);
+    memset(&h1, 0, sizeof h1);
+    (void)nl_rule_hits(&h1);
+    {
+        uint64_t din = b.injected - a.injected;
+        uint64_t dbr = h1.block_rx - h0.block_rx;
+        uint64_t h0v = h1.hits[0] - h0.hits[0];
+        printf("      policyrx: bad=%d inj=%llu (harap 400) "
+               "blockRx=%llu (harap 300) hits0=%llu (harap 300)\n",
+               bad, (unsigned long long)din,
+               (unsigned long long)dbr, (unsigned long long)h0v);
+        CHECK("policyrx: injrx semua OK", bad == 0);
+        CHECK("policyrx: inj delta 400", din == 400);
+        CHECK("policyrx: blockRx 300", dbr == 300);
+        CHECK("policyrx: hits rule0 300", h0v == 300);
+        CHECK("policyrx: stack hidup post", b.active_units > 0);
     }
     return 1;
 }
@@ -553,20 +739,26 @@ static int
 tFull(void)
 {
     int rc;
-    printf("=== (1/6) version & enum ===\n");
+    printf("=== (1/8) version & enum ===\n");
     if (!tVersion()) { printf("GAGAL early\n"); return 3; }
     (void)tEnum();
     (void)tStats();
-    printf("=== (2/6) capture 3s ===\n");
+    printf("=== (2/8) capture 3s ===\n");
     (void)tCapture(3);
-    printf("=== (3/6) inject 4000 ===\n");
+    printf("=== (3/8) inject 4000 ===\n");
     (void)tInject(4000);
-    printf("=== (4/6) policy blok TX ===\n");
+    printf("=== (4/8) policy blok TX ===\n");
     (void)tPolicy();
     (void)tPolicy2();
-    printf("=== (5/6) shm event 3s ===\n");
+    printf("=== (5/8) inject RX ===\n");
+    (void)tInjectRx();
+    printf("=== (6/8) hit per rule ===\n");
+    (void)tRuleHits();
+    printf("=== (7/8) policy blok RX ===\n");
+    (void)tPolicyRx();
+    printf("=== (8/8) shm event 3s ===\n");
     (void)tShm(3);
-    printf("=== (6/6) chaos 20s ===\n");
+    printf("=== (x/8) chaos 20s ===\n");
     (void)tChaos(20);
     printf("=== RINGKASAN: pass=%d fail=%d ===\n", g_pass, g_fail);
     rc = (g_fail == 0) ? 0 : 2;
@@ -593,6 +785,9 @@ main(int argc, char **argv)
     else if (!strcmp(cmd, "inject"))  r = tInject((uint32_t)strtoul(argv[2], NULL, 0));
     else if (!strcmp(cmd, "policy"))  r = tPolicy()  ? 0 : 4;
     else if (!strcmp(cmd, "policy2")) r = tPolicy2() ? 0 : 5;
+    else if (!strcmp(cmd, "injr"))    r = tInjectRx()  ? 0 : 6;
+    else if (!strcmp(cmd, "hits"))    r = tRuleHits()  ? 0 : 7;
+    else if (!strcmp(cmd, "policyrx"))r = tPolicyRx()  ? 0 : 8;
     else if (!strcmp(cmd, "shm"))     r = tShm(atoi(argv[2]));
     else if (!strcmp(cmd, "chaos"))   r = tChaos(atoi(argv[2]));
     else if (!strcmp(cmd, "full"))    r = tFull();

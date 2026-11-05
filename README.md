@@ -50,6 +50,8 @@ Semua METHOD_BUFFERED, access FILE_ANY_ACCESS, device 0x8900:
 0x89002020 MAP_RING     (in:  NL_MAP_RING = idx+len+UserVa[page-aligned, >= NL_SHM_BYTES]); STATUS_DEVICE_BUSY bila sudah ter-map
 0x89002024 UNMAP_RING   (in:  u32 adapter index; STATUS_ACCESS_DENIED bila milik file handle lain)
 0x89002028 GET_EVENT    (in: u32 idx; out: NL_EVENT = handle; SynchronizationEvent kernel->app; GET ulang mengganti handle aktif)
+0x8900202C INJECT_RX    (in:  NL_INJECT; frame di-indicate ke RX stack; ditolak bila policy RX memblok)
+0x89002030 RULEHITS     (out: NL_RULEHITS = hits[16] u64 per rule + block_tx + block_rx)
 ```
 
 ### Ring shared-memory (zero-copy)
@@ -76,3 +78,12 @@ direct-mapped) dan di-invalidate otomatis pada tiap `POLICY` baru
 
 Definisi struct lengkap: `src/ndislwf/filteruser.h` (kernel) dan
 `src/nlbridge/nlbridge.h` (user-mode C).
+
+### Evaluasi policy (v3)
+
+`NlPolicyEval(Data, Len, Dir)` mengevaluasi frame IPv4 untuk arah Dir
+(`NL_POLICY_EN_TX` / `NL_POLICY_EN_RX`): dst-MAC rule → flow cache →
+IP-rule walker. Rule yang match memblok frame dan menaikkan
+`NlRuleHits[i]` + counter `NlBlocked(Tx|Rx)` — increment di satu titik.
+`nl_inject_rx()` meng-evaluasi policy RX sebelum frame di-indicate, jadi
+frame yang diblokir tidak sampai ke TCP/IP stack.

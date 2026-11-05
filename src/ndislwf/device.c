@@ -523,6 +523,52 @@ FilterDeviceIoControl(
             break;
         }
 
+        case NL_IOCTL_INJECT_RX:
+        {
+            PNL_INJECT pj = (PNL_INJECT)Irp->AssociatedIrp.SystemBuffer;
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            NDIS_STATUS st;
+
+            if (InLen < sizeof(NL_INJECT) || pj->Len == 0 || pj->Len > NL_FRAME_MAX)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            st = NlInjectRx(pj->Data, pj->Len);
+            Status = (st == NDIS_STATUS_SUCCESS) ? STATUS_SUCCESS
+                   : (st == NDIS_STATUS_RESOURCES) ? STATUS_INSUFFICIENT_RESOURCES
+                   : (st == NDIS_STATUS_INVALID_STATE) ? STATUS_DEVICE_NOT_READY
+                   : STATUS_INVALID_PARAMETER;
+            InfoLength = 0;
+            break;
+        }
+
+        case NL_IOCTL_RULEHITS:
+        {
+            PNL_RULEHITS ph = (PNL_RULEHITS)Irp->AssociatedIrp.SystemBuffer;
+            ULONG OutLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+            ULONG i;
+
+            if (Irp->AssociatedIrp.SystemBuffer == NULL ||
+                OutLen < sizeof(NL_RULEHITS))
+            {
+                Status = STATUS_BUFFER_TOO_SMALL;
+                break;
+            }
+
+            NdisZeroMemory(ph, sizeof(NL_RULEHITS));
+            for (i = 0; i < NL_POLICY_MAX_RULES; i++)
+            {
+                ph->Hits[i] = NlRuleHits[i];
+            }
+            ph->BlockTx = NlBlockedTx;
+            ph->BlockRx = NlBlockedRx;
+            InfoLength = sizeof(NL_RULEHITS);
+            Status = STATUS_SUCCESS;
+            break;
+        }
+
         case NL_IOCTL_MAP_RING:
         {
             PNL_MAP_RING pm = (PNL_MAP_RING)Irp->AssociatedIrp.SystemBuffer;

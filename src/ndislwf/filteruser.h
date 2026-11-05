@@ -106,6 +106,9 @@ typedef struct _FILTER_WRITE_CONFIG
 #define NL_IOCTL_MAP_RING   NL_CODE(0x808)
 #define NL_IOCTL_UNMAP_RING NL_CODE(0x809)
 #define NL_IOCTL_GET_EVENT  NL_CODE(0x80a)
+/* v3 (M1): inject RX (replay) + observability per-rule */
+#define NL_IOCTL_INJECT_RX  NL_CODE(0x80b)
+#define NL_IOCTL_RULEHITS   NL_CODE(0x80c)
 
 #define NL_ABI_MAGIC   0x31504C4Eu   /* 'NLP1' */
 #define NL_ABI_VERSION ((1UL << 16) | 0UL)
@@ -196,6 +199,14 @@ typedef struct _NL_STATS {
     ULONG   ActiveUnits;
     ULONG   AbiVersion;
 } NL_STATS, *PNL_STATS;
+
+/* v3: hit per rule (index = urutan rule di policy) + block per arah.
+ * Hits[i] di-increment tepat oleh kernel saat rule i yang match memblok. */
+typedef struct _NL_RULEHITS {
+    ULONG64 Hits[NL_POLICY_MAX_RULES];
+    ULONG64 BlockTx;
+    ULONG64 BlockRx;
+} NL_RULEHITS, *PNL_RULEHITS;
 
 /* ----------------------------------------------------------------
  * v2: ring shared-memory zero-copy per adapter

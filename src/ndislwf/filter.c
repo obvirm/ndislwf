@@ -38,6 +38,13 @@ static NL_RING_ENTRY* NlRxRing;
 volatile LONG64    NlInj;
 volatile LONG64    NlBlocked;
 
+/* v3 M1: block per arah (NlBlocked = jumlah keduanya) + hit tertinggal per
+ * rule; index mengikuti posisi rule di policy global (Rules[i]). */
+volatile LONG64    NlBlockedTx;
+volatile LONG64    NlBlockedRx;
+volatile LONG64    NlRuleHits[NL_POLICY_MAX_RULES];
+#define NL_RULE_NONE   0xFFFFFFFFUL
+
 /* v2: flow cache 5-tuple (keputusan policy per ARAH TX di-cache) */
 typedef struct _NL_FLOW_KEY {
     ULONG   Sip;
@@ -52,7 +59,7 @@ typedef struct _NL_FLOW_ENT {
     volatile LONG64 Gen;        /* generasi policy saat entri sah; 0 = invalid */
     NL_FLOW_KEY     Key;
     volatile LONG   Blocked;
-    ULONG           Pad2;
+    volatile LONG   Rule;       /* rule pembuat verdict; -1 = tidak tahu */
 } NL_FLOW_ENT, *PNL_FLOW_ENT;
 
 #define NL_FLOW_TABLE_BIT   14
@@ -1523,7 +1530,7 @@ Arguments:
                         }
                         {
                             PUCHAR pdata = (PUCHAR)NdisGetDataBuffer(Pnbl, Plen, PolicyBuf, 1, 0);
-                            if (pdata != NULL && NlPolicyTxBlocked(pdata, Plen))
+                            if (pdata != NULL && NlPolicyEval(pdata, Plen, NL_POLICY_EN_TX))
                             {
                                 blocked = TRUE;
                                 break;
@@ -1868,7 +1875,7 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
                             PUCHAR rbdata;
                             if (rblen > NL_FRAME_MAX) { rblen = NL_FRAME_MAX; }
                             rbdata = (PUCHAR)NdisGetDataBuffer(rb, rblen, PolicyBuf, 1, 0);
-                            if (rbdata != NULL && NlPolicyTxBlocked(rbdata, rblen))
+                            if (rbdata != NULL && NlPolicyEval(rbdata, rblen, NL_POLICY_EN_RX))
                             {
                                 rBlocked = TRUE;
                             }
@@ -2580,7 +2587,8 @@ BOOLEAN
 NlFlowProbe(
     IN PNL_FLOW_KEY Key,
     IN LONG64 Gen,
-    OUT PBOOLEAN VerdictOut
+    OUT PBOOLEAN VerdictOut,
+    OUT PULONG RuleIdxOut
     )
 /*++  Hit-only lookup. TRUE = verdict cache (VerdictOut), FALSE = miss.
      Gen dari snapshot policy frame ini: entri policy lain tidak dihormati. --*/
@@ -2602,12 +2610,14 @@ NlFlowProbe(
         ent->Key.Proto == Key->Proto)
     {
         *VerdictOut = (ent->Blocked != 0);
+        *RuleIdxOut = (ent->Rule >= 0) ? (ULONG)ent->Rule : NL_RULE_NONE;
         hit = TRUE;
         InterlockedIncrement64(&NlFlowHit);
     }
     else
     {
         InterlockedIncrement64(&NlFlowMiss);
+        *RuleIdxOut = NL_RULE_NONE;
     }
     KeReleaseSpinLock(&NlFlowLock, OldIrql);
 
@@ -2618,6 +2628,7 @@ VOID
 NlFlowStore(
     IN PNL_FLOW_KEY Key,
     IN BOOLEAN Blocked,
+    IN ULONG RuleIdx,
     IN LONG64 Gen
     )
 /*++  Simpan verdict untuk generasi panggilan ini — TIDAK dibaca ulang dari
@@ -2637,6 +2648,7 @@ NlFlowStore(
     ent = &NlFlowTab[NlFlowHash(Key)];
     ent->Key = *Key;
     ent->Blocked = Blocked ? 1 : 0;
+    ent->Rule = (RuleIdx == NL_RULE_NONE) ? -1 : (LONG)RuleIdx;
     InterlockedExchange64(&ent->Gen, Gen);
     KeReleaseSpinLock(&NlFlowLock, OldIrql);
 }
@@ -3027,7 +3039,7 @@ NlInjectTx(
 
     /* NBL diurus sendiri (drop); entry BELUM masuk NlInjList saat titik te
      * ini, jadi cukup bebas semua alokasi tanpa RemoveEntryList. */
-    if (NlPolicyTxBlocked(Buf, Len))
+    if (NlPolicyEval(Buf, Len, NL_POLICY_EN_TX))
     {
         NdisFreeMemory(Ent, sizeof(NL_INJ_ENTRY), 0);
         NdisFreeNetBufferList(Nbl);
@@ -3072,6 +3084,98 @@ NlInjectTx(
     return Status;
 }
 
+NDIS_STATUS
+NlInjectRx(
+    IN PUCHAR Data,
+    IN ULONG Len
+    )
+/*++  Suntik frame ke jalur RX (replay): indicate ke stack lewat
+     NdisFIndicateReceiveNetBufferLists pada adapter RUNNING pertama.
+     Di-indicate dengan NDIS_RECEIVE_FLAGS_RESOURCES → konsumsi sinkron:
+     buffer/NBL bebas kita segera setelah panggilan, tidak ada antrean
+     completeness (beda aset dengan inject TX yang menggantung NBL). --*/
+{
+    PMDL             Mdl;
+    PUCHAR           Buf;
+    PNET_BUFFER_LIST Nbl;
+    PLIST_ENTRY      Link;
+    PMS_FILTER       pFilter;
+    BOOLEAN          Sent = FALSE;
+
+    if (Len == 0 || Len > NL_FRAME_MAX || NlInjectNblPool == NULL)
+    {
+        return NDIS_STATUS_INVALID_PARAMETER;
+    }
+
+    Buf = (PUCHAR)NdisAllocateMemoryWithTagPriority(FilterDriverHandle,
+                                                    NL_FRAME_MAX,
+                                                    FILTER_ALLOC_TAG,
+                                                    NormalPoolPriority);
+    if (Buf == NULL)
+    {
+        return NDIS_STATUS_RESOURCES;
+    }
+    NdisZeroMemory(Buf, NL_FRAME_MAX);
+    NdisMoveMemory(Buf, Data, Len);
+
+    Mdl = IoAllocateMdl(Buf, NL_FRAME_MAX, FALSE, FALSE, NULL);
+    if (Mdl == NULL)
+    {
+        NdisFreeMemory(Buf, NL_FRAME_MAX, 0);
+        return NDIS_STATUS_RESOURCES;
+    }
+    MmBuildMdlForNonPagedPool(Mdl);
+
+    Nbl = NdisAllocateNetBufferAndNetBufferList(NlInjectNblPool, 0, 0, Mdl, 0, Len);
+    if (Nbl == NULL)
+    {
+        IoFreeMdl(Mdl);
+        NdisFreeMemory(Buf, NL_FRAME_MAX, 0);
+        return NDIS_STATUS_RESOURCES;
+    }
+    Nbl->SourceHandle = FilterDriverHandle;
+
+    InterlockedIncrement64(&NlInj);
+
+    /* Evaluasi policy RX dulu: frame yang diblokir tidak masuk stack
+     * (counter NlBlockedRx/NlRuleHits tetap naik lewat NlPolicyEval). */
+    if (NlPolicyEval(Buf, Len, NL_POLICY_EN_RX))
+    {
+        NdisFreeNetBufferList(Nbl);
+        IoFreeMdl(Mdl);
+        NdisFreeMemory(Buf, NL_FRAME_MAX, 0);
+        return NDIS_STATUS_SUCCESS;
+    }
+
+    FILTER_ACQUIRE_LOCK(&FilterListLock, FALSE);
+    for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+    {
+        pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+        if (pFilter->State == FilterRunning)
+        {
+            NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle,
+                                               Nbl,
+                                               NDIS_DEFAULT_PORT_NUMBER,
+                                               1,
+                                               NDIS_RECEIVE_FLAGS_RESOURCES |
+                                               NDIS_RECEIVE_FLAGS_DISPATCH_LEVEL);
+            Sent = TRUE;
+            break;
+        }
+    }
+    FILTER_RELEASE_LOCK(&FilterListLock, FALSE);
+
+    if (!Sent)
+    {
+        NdisFreeNetBufferList(Nbl);
+        IoFreeMdl(Mdl);
+        NdisFreeMemory(Buf, NL_FRAME_MAX, 0);
+        return NDIS_STATUS_INVALID_STATE;
+    }
+
+    return NDIS_STATUS_SUCCESS;
+}
+
 
 ULONG
 NlDrainAll(
@@ -3110,10 +3214,12 @@ NlIpRulesBlocked(
     IN ULONG  Dip,
     IN USHORT SrcPort,
     IN USHORT DstPort,
-    IN ULONG  Proto
+    IN ULONG  Proto,
+    IN PULONG RuleIdxOut
     )
 /*++  Block IP-rule walker terhadap SNAPSHOT policy (bukan global), tanpa
-     hitungan NlBlocked (increment tepat satu titik di NlPolicyTxBlocked). --*/
+     hitungan NlBlocked (increment tepat satu titik di NlPolicyEval).
+     RuleIdxOut = index rule yang match, NL_RULE_NONE bila tidak ada. --*/
 {
     PNL_POLICY_RULE r;
     ULONG i;
@@ -3128,6 +3234,7 @@ NlIpRulesBlocked(
             {
                 if (SrcPort == 0 || (SrcPort >= r->PortMin && SrcPort <= r->PortMax))
                 {
+                    *RuleIdxOut = i;
                     return TRUE;
                 }
             }
@@ -3138,6 +3245,7 @@ NlIpRulesBlocked(
             {
                 if (DstPort == 0 || (DstPort >= r->PortMin && DstPort <= r->PortMax))
                 {
+                    *RuleIdxOut = i;
                     return TRUE;
                 }
             }
@@ -3149,10 +3257,11 @@ NlIpRulesBlocked(
 static BOOLEAN
 NlDmacBlocked(
     IN PNL_POLICY Snap,
-    IN PUCHAR Data
+    IN PUCHAR Data,
+    IN PULONG RuleIdxOut
     )
 /*++  Match dst MAC ethernet (Data[0..5]) terhadap rule NL_MATCH_DSTMAC
-     pada snapshot. --*/
+     pada snapshot. RuleIdxOut = index rule yang match. --*/
 {
     ULONG i;
     PNL_POLICY_RULE r;
@@ -3168,6 +3277,7 @@ NlDmacBlocked(
             Data[2] == r->DstMac[2] && Data[3] == r->DstMac[3] &&
             Data[4] == r->DstMac[4] && Data[5] == r->DstMac[5])
         {
+            *RuleIdxOut = i;
             return TRUE;
         }
     }
@@ -3175,15 +3285,18 @@ NlDmacBlocked(
 }
 
 BOOLEAN
-NlPolicyTxBlocked(
+NlPolicyEval(
     IN PUCHAR Data,
-    IN ULONG  Len
+    IN ULONG  Len,
+    IN ULONG  Dir
     )
-/*++  Cek frame (header IPv4) terhadap policy; dipakai TX dan RX.
+/*++  Cek frame (header IPv4) terhadap policy untuk arah Dir
+      (NL_POLICY_EN_TX / NL_POLICY_EN_RX); dipakai TX, RX, dan inject.
       - snapshot NL_POLICY + generasi dibaca SATU kali di bawah NlFlowLock,
         maka NlPolicySet tidak bisa merusak evaluasi frame ini;
       - flow cache hanya dihormati bila generasinya sama dengan snapshot;
-      - NlBlocked increment TEPAT SATU titik di sini. --*/
+      - hit rule + counter NlBlocked/BlockedTx/BlockedRx increment TEPAT
+        SATU titik di sini. --*/
 {
     NL_POLICY Snap;
     LONG64 Gen;
@@ -3191,6 +3304,7 @@ NlPolicyTxBlocked(
     BOOLEAN blocked = FALSE, portsValid = TRUE;
     USHORT srcPort, dstPort;
     ULONG ipHdrLen, proto, sip, dip, off;
+    ULONG RuleIdx = NL_RULE_NONE;
 
     /* gate murah tanpa kunci: Enabled ULONG aligned = baca atomik */
     if (NlPolicy.Enabled == 0 || Len < 34)
@@ -3208,7 +3322,7 @@ NlPolicyTxBlocked(
     Gen = NlFlowGen;
     KeReleaseSpinLock(&NlFlowLock, OldIrql);
 
-    if (Snap.Enabled == 0 || ((Snap.Enabled & (NL_POLICY_EN_TX | NL_POLICY_EN_RX)) == 0))
+    if (Snap.Enabled == 0 || ((Snap.Enabled & Dir) == 0))
     {
         return FALSE;
     }
@@ -3238,7 +3352,7 @@ NlPolicyTxBlocked(
         }
     }
 
-    if (NlDmacBlocked(&Snap, Data))
+    if (NlDmacBlocked(&Snap, Data, &RuleIdx))
     {
         blocked = TRUE;
     }
@@ -3254,26 +3368,38 @@ NlPolicyTxBlocked(
         key.Proto = (UCHAR)proto;
         key.Pad = 0;
 
-        if (NlFlowProbe(&key, Gen, &verdict))
+        if (NlFlowProbe(&key, Gen, &verdict, &RuleIdx))
         {
             blocked = verdict;
         }
         else
         {
-            verdict = NlIpRulesBlocked(&Snap, sip, dip, srcPort, dstPort, proto);
-            NlFlowStore(&key, verdict, Gen);
+            verdict = NlIpRulesBlocked(&Snap, sip, dip, srcPort, dstPort, proto, &RuleIdx);
+            NlFlowStore(&key, verdict, RuleIdx, Gen);
             blocked = verdict;
         }
     }
     else
     {
         /* proto bukan TCP/UDP, frame berpotongan, atau cache mati: IP-only */
-        blocked = NlIpRulesBlocked(&Snap, sip, dip, srcPort, dstPort, proto);
+        blocked = NlIpRulesBlocked(&Snap, sip, dip, srcPort, dstPort, proto, &RuleIdx);
     }
 
     if (blocked)
     {
+        if (RuleIdx < NL_POLICY_MAX_RULES)
+        {
+            InterlockedIncrement64(&NlRuleHits[RuleIdx]);
+        }
         InterlockedIncrement64(&NlBlocked);
+        if (Dir == NL_POLICY_EN_RX)
+        {
+            InterlockedIncrement64(&NlBlockedRx);
+        }
+        else
+        {
+            InterlockedIncrement64(&NlBlockedTx);
+        }
     }
     return blocked;
 }

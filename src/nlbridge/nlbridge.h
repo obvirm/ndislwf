@@ -32,6 +32,8 @@ extern "C" {
 #define NL_IOC_MAP_RING   0x89002020u  /* fn 0x808 (v2) */
 #define NL_IOC_UNMAP_RING 0x89002024u  /* fn 0x809 (v2) */
 #define NL_IOC_GET_EVENT  0x89002028u  /* fn 0x80a (v2) */
+#define NL_IOC_INJECT_RX  0x8900202Cu  /* fn 0x80b (v3) */
+#define NL_IOC_RULEHITS   0x89002030u  /* fn 0x80c (v3) */
 
 #define NL_ABI_MAGIC      0x31504C4Eu  /* 'NLP1' */
 #define NL_ABI_VERSION    0x00010000u  /* v1.0 */
@@ -125,6 +127,13 @@ typedef struct nl_policy {
     nl_policy_rule_t rules[NL_POLICY_MAX_RULES];
 } nl_policy_t;
 
+/* 144 byte: hit per rule (v3); rules[i] match saat memblok kernel +1 */
+typedef struct nl_rule_hits {
+    uint64_t hits[NL_POLICY_MAX_RULES];
+    uint64_t block_tx;
+    uint64_t block_rx;
+} nl_rule_hits_t;
+
 /* 80 byte struct (band header 128 byte): kepala SHM; head kernel, tail app */
 typedef struct nl_shm_hdr {
     uint32_t magic;
@@ -186,6 +195,12 @@ NL_API int  nl_clear(void);
 
 /* Set policy global (block TX/RX). 0 = sukses. */
 NL_API int  nl_policy_set(const nl_policy_t* policy);
+
+/* Suntik frame ke jalur RX (replay, v3). 0 = sukses. */
+NL_API int  nl_inject_rx(const void* data, uint32_t len);
+
+/* Hit per rule + counter block per arah (v3). 0 = sukses. */
+NL_API int  nl_rule_hits(nl_rule_hits_t* out);
 
 /* Map buffer SHM untuk capture zero-copy. virtual_address harus page-aligned
  * (aloc di nl_shm_alloc) dan len >= NL_SHM_BYTES. Buffer milik caller;

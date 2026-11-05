@@ -226,6 +226,24 @@ NL_API int nl_policy_set(const nl_policy_t* policy)
     return nl_ioctl(NL_IOC_POLICY, &p, (DWORD)sizeof(p), NULL, 0, NULL);
 }
 
+NL_API int nl_inject_rx(const void* data, uint32_t len)
+{
+    if (data == NULL || len == 0 || len > NL_FRAME_MAX) { return ERROR_INVALID_PARAMETER; }
+    nl_inject_t in;
+    memset(&in, 0, sizeof(in));
+    in.len = len;
+    memcpy(in.data, data, len);
+    return nl_ioctl(NL_IOC_INJECT_RX, &in, (DWORD)sizeof(in), NULL, 0, NULL);
+}
+
+NL_API int nl_rule_hits(nl_rule_hits_t* out)
+{
+    static_assert(sizeof(nl_rule_hits_t) == 144, "layout nl_rule_hits harus 144");
+    if (out == NULL) { return ERROR_INVALID_PARAMETER; }
+    memset(out, 0, sizeof(*out));
+    return nl_ioctl(NL_IOC_RULEHITS, NULL, 0, out, (DWORD)sizeof(*out), NULL);
+}
+
 NL_API void* nl_shm_alloc(void)
 {
     void* p = VirtualAlloc(NULL, (SIZE_T)NL_SHM_BYTES,
