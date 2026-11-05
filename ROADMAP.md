@@ -20,9 +20,12 @@
 - [x] Hasil guest (4 thread socket stack-TX): SHM drain 35–38k pps vs READ_RING 13–22k pps (`nlstress bench 3` = 2.7×; `full` = 1.7×); **paket/wake ≈ 60** (para wake per batch, bukan per paket); drop=0 pure bench.
 - catatan: consumer instan (tidak pernah di belakang) menghasilkan 1 wake/paket (wasEmpty tiap burst) — coalescing tervisible di skenario overload; itulah bentuknya yang diinginkan untuk latensi rendah.
 
-### M3 Aksi netem dinamis per rule
-- `NL_ACTION = ALLOW|BLOCK|MIRROR|REDIRECT|DELAY|DROP_PCT|RATE_LIMIT`.
-- `delay_ms`, `drop_pct`, `rate_kbps` per rule di eval kernel; implement: queue deadline (KeSetTimer/DPC) untuk delay, counter probabilitas untuk drop_pct, token-bucket untuk rate.
+### M3 ✅ Aksi netem dinamis per rule
+- `NL_ACTION = ALLOW|BLOCK|DELAY|DROP_PCT|RATE` per rule lewat tabel EX (`NL_POLICY_EX`, ioctl `0x89002034`); `count=0` kembali ke tabel policy lama.
+- First-match TANPA flow cache (aksi bisa acak/waktu-bergantung); dmac rule dievaluasi dulu, fallback parse IPv4.
+- DELAY: satu antrean global (max 4096, due ≤60 s) + KTIMER/KDPC, proses luar kunci, re-arm due terkecil; TX NBL ditahan lalu di-forward apa adanya, RX frame di-indicate ulang; `DELAYSTAT` (0x89002038) pas/fired observability; drain complete-failure saat pause/detach.
+- DROP_PCT: RNG LCG per rule; RATE: token bucket per rule (burst = 1 s rate, refill QPC dibagi Freq).
+- Hasil guest: netem 4/4 + full 53/53 pass (block 100/100, drop50 ±2k, delay pending→fired=10 antrean kering, rate 256 kbps drop 393 dari 600 frame, burst 32 KB).
 
 ### M4 VM mini BPF-style (rule terkompilasi)
 - Endi rule match bebas-field: user-space mengkompilasi `(match expr) → action` menjadi

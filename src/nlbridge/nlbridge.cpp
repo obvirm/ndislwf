@@ -215,6 +215,8 @@ NL_API int nl_clear(void)
 static_assert(sizeof(nl_policy_t) == 456, "layout nl_policy harus 456");
 static_assert(sizeof(nl_shm_hdr_t) == 96, "layout nl_shm_hdr harus 96");
 static_assert(NL_SHM_BYTES == 128 + 2u * 1024u * 1524u, "NL_SHM_BYTES harus 3117184");
+static_assert(sizeof(nl_policy_rule_ex_t) == 44, "layout nl_policy_rule_ex harus 44");
+static_assert(sizeof(nl_policy_ex_t) == 712, "layout nl_policy_ex harus 712");
 
 NL_API int nl_policy_set(const nl_policy_t* policy)
 {
@@ -224,6 +226,24 @@ NL_API int nl_policy_set(const nl_policy_t* policy)
     memset(&p, 0, sizeof(p));
     memcpy(&p, policy, sizeof(p));
     return nl_ioctl(NL_IOC_POLICY, &p, (DWORD)sizeof(p), NULL, 0, NULL);
+}
+
+NL_API int nl_policy_ex_set(const nl_policy_ex_t* ex)
+{
+    if (ex == NULL) { return ERROR_INVALID_PARAMETER; }
+    if (ex->count > NL_POLICY_MAX_RULES) { return ERROR_INVALID_PARAMETER; }
+    nl_policy_ex_t p;
+    memset(&p, 0, sizeof(p));
+    memcpy(&p, ex, sizeof(p));
+    return nl_ioctl(NL_IOC_POLICY_EX, &p, (DWORD)sizeof(p), NULL, 0, NULL);
+}
+
+NL_API int nl_delay_stat(nl_delay_stat_t* out)
+{
+    static_assert(sizeof(nl_delay_stat_t) == 16, "layout nl_delay_stat harus 16");
+    if (out == NULL) { return ERROR_INVALID_PARAMETER; }
+    memset(out, 0, sizeof(*out));
+    return nl_ioctl(NL_IOC_DELAYSTAT, NULL, 0, out, (DWORD)sizeof(*out), NULL);
 }
 
 NL_API int nl_inject_rx(const void* data, uint32_t len)

@@ -540,6 +540,153 @@ static volatile LONG g_chaosStop;
 static void chInject(void *arg);
 static void chSend(void *arg);
 
+static uint32_t
+setNetem(uint32_t action, uint32_t delayMs, uint32_t dropPct, uint32_t rateKbps)
+{
+    nl_policy_ex_t ex;
+    memset(&ex, 0, sizeof ex);
+    ex.count = 1;
+    ex.enabled = NL_POLICY_EN_TX | NL_POLICY_EN_RX;
+    ex.rules[0].r.proto     = NL_PROTO_ANY;
+    ex.rules[0].r.match     = NL_MATCH_DSTMAC;
+    memcpy(ex.rules[0].r.dst_mac, MAC_TST, 6);
+    ex.rules[0].action   = action;
+    ex.rules[0].delay_ms = delayMs;
+    ex.rules[0].drop_pct = dropPct;
+    ex.rules[0].rate_kbps = rateKbps;
+    return (uint32_t)nl_policy_ex_set(&ex);
+}
+
+static void
+clearNetem(void)
+{
+    nl_policy_ex_t ex;
+    memset(&ex, 0, sizeof ex);   /* count 0 = EX mati, kembali tabel lama */
+    (void)nl_policy_ex_set(&ex);
+}
+
+static int
+tNetem(void)
+/*++  M3 aksi netem per rule (tabel EX). Empat tahap, semua rule menyesar
+     dst-MAC salah test (0E:0B:0A:01:02:03) sehingga frame bawaan stack
+     (lis broadcast) tidak tersapu:
+       A) BLOCK   — injex TX 100 TST: hits+100, drop+100; 200 BC lolos.
+       B) DROP_PCT 50 — 4000 inj TX: hits dalam dasar statistik ±50%.
+       C) DELAY 500ms — 10 inj TX (fase penuh): antrean pending naik lalu
+          0 (fired +10) — diukur lewat ioctl DELAYSTAT (deterministik).
+       D) RATE 256kbps — inj TX 200 payload ~1500B; frames digetToken,
+          yang di atas kapasitas 1-detik di-drop; jumlah hit jelas < 200.
+     EX aktif mem-bypass tabel policy lama; setiap tahap memasang tabel
+     barus, diakhir EX dimatikan (count=0). --*/
+{
+    nl_stats_t a, b;
+    nl_rule_hits_t h0, h1;
+    nl_delay_stat_t d0, d1, d2;
+    int ret, bad = 0;
+
+    (void)nl_rule_hits(&h0);
+    memset(&a, 0, sizeof a); memset(&b, 0, sizeof b);
+    (void)nl_stats(NULL, &a);
+    memset(&d0, 0, sizeof d0);
+    (void)nl_delay_stat(&d0);
+
+    /* ---- tahap A: BLOCK ---- */
+    ret = setNetem(NL_ACTION_BLOCK, 0, 0, 0);
+    CHECK("netem: ex set (block)", ret == 0);
+    bad += injectN(100, NL_PROTO_UDP, 45001, MAC_TST);   /* harus blok */
+    bad += injectN(200, NL_PROTO_UDP, 45002, MAC_BC);    /* lolos */
+    Sleep(100);
+
+    memset(&h1, 0, sizeof h1);
+    (void)nl_rule_hits(&h1);
+    {
+        uint64_t h0v = h1.hits[0] - h0.hits[0];
+        uint64_t ddr = 0;
+        nl_stats_t st;
+        memset(&st, 0, sizeof st);
+        (void)nl_stats(NULL, &st);
+        ddr = st.dropped - a.dropped;
+        printf("      netem A: hits0=%llu drop=%llu (harap 100,100) bad=%d\n",
+               (unsigned long long)h0v, (unsigned long long)ddr, bad);
+        CHECK("netem A: block hits 100", h0v == 100);
+        CHECK("netem A: kesal drop 100", ddr == 100);
+    }
+
+    /* ---- tahap B: DROP_PCT 50% ---- */
+    memset(&h1, 0, sizeof h1);
+    (void)nl_rule_hits(&h1);
+    ret = setNetem(NL_ACTION_DROP_PCT, 0, 50, 0);
+    CHECK("netem: ex set (drop50)", ret == 0);
+    injectN(4000, NL_PROTO_UDP, 45003, MAC_TST);
+    Sleep(200);
+    (void)nl_rule_hits(&h1);
+    clearNetem();
+    {
+        uint64_t ddrop = h1.hits[0] - h0.hits[0] - 100;  /* kurangi tahap A */
+        printf("      netem B: hit drop50=%llu (harap ~2000)\n",
+               (unsigned long long)ddrop);
+        CHECK("netem B: drop_pct 50% rata", ddrop >= 1700 && ddrop <= 2300);
+    }
+
+    /* ---- tahap C: DELAY 500ms ---- */
+    ret = setNetem(NL_ACTION_DELAY, 500, 0, 0);
+    CHECK("netem: ex set (delay500)", ret == 0);
+    memset(&h0, 0, sizeof h0);
+    (void)nl_rule_hits(&h0);
+    memset(&d1, 0, sizeof d1);
+    ret = nl_delay_stat(&d1);
+    CHECK("netem: delaystat ok", ret == 0);
+    injectN(10, NL_PROTO_UDP, 45004, MAC_TST);           /* 10 frame ditahan */
+    Sleep(200);
+    memset(&h1, 0, sizeof h1);
+    (void)nl_rule_hits(&h1);
+    memset(&d2, 0, sizeof d2);
+    (void)nl_delay_stat(&d2);
+    {
+        uint64_t pend = d2.pending - d1.pending;
+        uint64_t delayHits = h1.hits[0] - h0.hits[0];
+        printf("      netem C: antre delay500ms: pending=%llu hits=%llu (harap >=10, 10)\n",
+               (unsigned long long)pend, (unsigned long long)delayHits);
+        CHECK("netem C: pending naik sebelum due", pend >= 10);
+        CHECK("netem C: hits delay diantre", delayHits == 10);
+    }
+    Sleep(1200);   /* 500 due + slack call */
+    memset(&d1, 0, sizeof d1);
+    (void)nl_delay_stat(&d1);
+    {
+        uint64_t hd = d1.fired - d2.fired;
+        printf("      netem C: matang %llu item; sisa pending=%llu\n",
+               (unsigned long long)hd, (unsigned long long)d1.pending);
+        CHECK("netem C: fired +10 setelah due", hd >= 10);
+        CHECK("netem C: antrean kering", d1.pending == 0);
+    }
+    clearNetem();
+
+    /* ---- tahap D: RATE 256 kbps ---- */
+    memset(&h0, 0, sizeof h0);
+    (void)nl_rule_hits(&h0);
+    ret = setNetem(NL_ACTION_RATE, 0, 0, 256);
+    CHECK("netem: ex set (rate256)", ret == 0);
+    injectN(600, NL_PROTO_UDP, 45005, MAC_TST);  /* ~60..259 byte each */
+    Sleep(300);
+    (void)nl_rule_hits(&h1);
+    clearNetem();
+    {
+        uint64_t drate = h1.hits[0] - h0.hits[0];
+        printf("      netem D: hit rate=%llu (harap > 0, < 600, burst 32KB)\n",
+               (unsigned long long)drate);
+        CHECK("netem D: rate cap", drate < 600 && drate > 0);
+    }
+
+    clearNetem();
+    {
+        nl_policy_t p;
+        memset(&p, 0, sizeof p);
+        (void)nl_policy_set(&p);   /* bersihkan policy lama yang biasa */
+    }
+    return 1;
+}
+
 static int
 tBench(int seconds)
 /*++  M2 batch drain async. Dua fase, masing-masing `seconds` detik, 4 thread
@@ -879,28 +1026,30 @@ static int
 tFull(void)
 {
     int rc;
-    printf("=== (1/9) version & enum ===\n");
+    printf("=== (1/10) version & enum ===\n");
     if (!tVersion()) { printf("GAGAL early\n"); return 3; }
     (void)tEnum();
     (void)tStats();
-    printf("=== (2/9) capture 3s ===\n");
+    printf("=== (2/10) capture 3s ===\n");
     (void)tCapture(3);
-    printf("=== (3/9) inject 4000 ===\n");
+    printf("=== (3/10) inject 4000 ===\n");
     (void)tInject(4000);
-    printf("=== (4/9) policy blok TX ===\n");
+    printf("=== (4/10) policy blok TX ===\n");
     (void)tPolicy();
     (void)tPolicy2();
-    printf("=== (5/9) inject RX ===\n");
+    printf("=== (5/10) inject RX ===\n");
     (void)tInjectRx();
-    printf("=== (6/9) hit per rule ===\n");
+    printf("=== (6/10) hit per rule ===\n");
     (void)tRuleHits();
-    printf("=== (7/9) policy blok RX ===\n");
+    printf("=== (7/10) policy blok RX ===\n");
     (void)tPolicyRx();
-    printf("=== (8/9) shm event 3s ===\n");
+    printf("=== (8/10) netem (M3) ===\n");
+    (void)tNetem();
+    printf("=== (9/10) shm event 3s ===\n");
     (void)tShm(3);
-    printf("=== (9/9) bench drain 2+2s ===\n");
+    printf("=== (10/10) bench drain 2+2s ===\n");
     (void)tBench(2);
-    printf("=== (x/9) chaos 20s ===\n");
+    printf("=== (x/10) chaos 20s ===\n");
     (void)tChaos(20);
     printf("=== RINGKASAN: pass=%d fail=%d ===\n", g_pass, g_fail);
     rc = (g_fail == 0) ? 0 : 2;
@@ -930,6 +1079,7 @@ main(int argc, char **argv)
     else if (!strcmp(cmd, "injr"))    r = tInjectRx()  ? 0 : 6;
     else if (!strcmp(cmd, "hits"))    r = tRuleHits()  ? 0 : 7;
     else if (!strcmp(cmd, "policyrx"))r = tPolicyRx()  ? 0 : 8;
+    else if (!strcmp(cmd, "netem"))   r = tNetem()     ? 0 : 10;
     else if (!strcmp(cmd, "shm"))     r = tShm(atoi(argv[2]));
     else if (!strcmp(cmd, "bench"))   r = tBench(atoi(argv[2]));
     else if (!strcmp(cmd, "chaos"))   r = tChaos(atoi(argv[2]));

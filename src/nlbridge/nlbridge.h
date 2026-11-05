@@ -34,6 +34,8 @@ extern "C" {
 #define NL_IOC_GET_EVENT  0x89002028u  /* fn 0x80a (v2) */
 #define NL_IOC_INJECT_RX  0x8900202Cu  /* fn 0x80b (v3) */
 #define NL_IOC_RULEHITS   0x89002030u  /* fn 0x80c (v3) */
+#define NL_IOC_POLICY_EX  0x89002034u  /* fn 0x80d (v4/M3) */
+#define NL_IOC_DELAYSTAT  0x89002038u  /* fn 0x80e (v4/M3) */
 
 #define NL_ABI_MAGIC      0x31504C4Eu  /* 'NLP1' */
 #define NL_ABI_VERSION    0x00010000u  /* v1.0 */
@@ -120,6 +122,38 @@ typedef struct nl_policy_rule {
     uint8_t  dst_mac[6];
 } nl_policy_rule_t;
 
+/* v4 (M3): aksi netem per rule — tabel EX. Saat EX aktif (count > 0),
+ * evaluasi frame SELURUHNYA lewat EX; tabel policy lama tidak dipakai.
+ * count = 0 mematikan EX dan mengembalikan ke tabel policy lama. */
+#define NL_ACTION_ALLOW     0u
+#define NL_ACTION_BLOCK     1u
+#define NL_ACTION_DELAY     2u
+#define NL_ACTION_DROP_PCT  3u
+#define NL_ACTION_RATE      4u
+#define NL_DELAY_MAX_MS     60000u
+
+/* 44 byte: rule EX (28 B rule v1 + 4 aksi) */
+typedef struct nl_policy_rule_ex {
+    nl_policy_rule_t r;
+    uint32_t action;                /* NL_ACTION_* */
+    uint32_t delay_ms;              /* NL_ACTION_DELAY (0 = passthrough) */
+    uint32_t drop_pct;              /* 0..100 (NL_ACTION_DROP_PCT) */
+    uint32_t rate_kbps;             /* NL_ACTION_RATE (0 = tanpa limit) */
+} nl_policy_rule_ex_t;
+
+/* 712 byte: tabel EX */
+typedef struct nl_policy_ex {
+    uint32_t count;                 /* <= NL_POLICY_MAX_RULES; 0 = nonaktif */
+    uint32_t enabled;               /* bitmask NL_POLICY_EN_* */
+    nl_policy_rule_ex_t rules[NL_POLICY_MAX_RULES];
+} nl_policy_ex_t;
+
+/* 16 byte: status antrean delay netem (v4) */
+typedef struct nl_delay_stat {
+    uint64_t pending;               /* masih menunggu due */
+    uint64_t fired;                 /* sudah matang keluar antrean */
+} nl_delay_stat_t;
+
 /* 456 byte: set policy global */
 typedef struct nl_policy {
     uint32_t count;                 /* <= NL_POLICY_MAX_RULES */
@@ -199,6 +233,12 @@ NL_API int  nl_clear(void);
 
 /* Set policy global (block TX/RX). 0 = sukses. */
 NL_API int  nl_policy_set(const nl_policy_t* policy);
+
+/* v4: set tabel aksi netem per rule. 0 = sukses. */
+NL_API int  nl_policy_ex_set(const nl_policy_ex_t* ex);
+
+/* v4: baca status antrean delay netem. 0 = sukses. */
+NL_API int  nl_delay_stat(nl_delay_stat_t* out);
 
 /* Suntik frame ke jalur RX (replay, v3). 0 = sukses. */
 NL_API int  nl_inject_rx(const void* data, uint32_t len);

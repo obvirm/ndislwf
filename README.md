@@ -52,6 +52,8 @@ Semua METHOD_BUFFERED, access FILE_ANY_ACCESS, device 0x8900:
 0x89002028 GET_EVENT    (in: u32 idx; out: NL_EVENT = handle; SynchronizationEvent kernel->app; GET ulang mengganti handle aktif)
 0x8900202C INJECT_RX    (in:  NL_INJECT; frame di-indicate ke RX stack; ditolak bila policy RX memblok)
 0x89002030 RULEHITS     (out: NL_RULEHITS = hits[16] u64 per rule + block_tx + block_rx)
+0x89002034 POLICY_EX    (in: NL_POLICY_EX = 712 B; count=0 → kembali ke POLICY lama)
+0x89002038 DELAYSTAT    (out: NL_DELAY_STAT = pending + fired u64)
 ```
 
 ### Ring shared-memory (zero-copy)
@@ -93,3 +95,15 @@ IP-rule walker. Rule yang match memblok frame dan menaikkan
 `NlRuleHits[i]` + counter `NlBlocked(Tx|Rx)` — increment di satu titik.
 `nl_inject_rx()` meng-evaluasi policy RX sebelum frame di-indicate, jadi
 frame yang diblokir tidak sampai ke TCP/IP stack.
+
+### Netem per rule (v4)
+
+`POLICY_EX` memasang tabel EX: tiap rule punya aksi
+(`ALLOW/BLOCK/DELAY/DROP_PCT/RATE`), delay ms, drop %, dan rate Kbps.
+Saat tabel EX aktif, seluruh frame dievaluasi first-match TANPA flow
+cache (aksi bisa acak/waktu-bergantung); `count=0` mengembalikan ke
+tabel v3. Aksi DELAY menahan frame di antrean kernel (DPC timer,
+max 4096 item, due maks 60 s) lalu mainkan ulang saat matang — TX
+dilewatkan apa adanya, RX di-indicate ulang; status antrean dibaca
+via `DELAYSTAT` (pending/fired). DROP_PCT pakai RNG per rule; RATE
+adalah token bucket per rule (burst = 1 s rate, refill QPC).

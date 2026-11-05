@@ -523,6 +523,42 @@ FilterDeviceIoControl(
             break;
         }
 
+        case NL_IOCTL_POLICY_EX:
+        {
+            PNL_POLICY_EX pp = (PNL_POLICY_EX)Irp->AssociatedIrp.SystemBuffer;
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+
+            if (InLen != sizeof(NL_POLICY_EX) || pp == NULL ||
+                pp->Count > NL_POLICY_MAX_RULES)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            NlPolicyExSet(pp);
+            Status = STATUS_SUCCESS;
+            InfoLength = 0;
+            break;
+        }
+
+        case NL_IOCTL_DELAYSTAT:
+        {
+            PNL_DELAY_STAT pd = (PNL_DELAY_STAT)Irp->AssociatedIrp.SystemBuffer;
+            ULONG OutLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+
+            if (Irp->AssociatedIrp.SystemBuffer == NULL ||
+                OutLen < sizeof(NL_DELAY_STAT))
+            {
+                Status = STATUS_BUFFER_TOO_SMALL;
+                break;
+            }
+            pd->Pending = (ULONG64)NlDelayCount;
+            pd->Fired = NlDelayFired;
+            InfoLength = sizeof(NL_DELAY_STAT);
+            Status = STATUS_SUCCESS;
+            break;
+        }
+
         case NL_IOCTL_INJECT_RX:
         {
             PNL_INJECT pj = (PNL_INJECT)Irp->AssociatedIrp.SystemBuffer;

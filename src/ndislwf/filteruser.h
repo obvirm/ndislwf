@@ -109,6 +109,11 @@ typedef struct _FILTER_WRITE_CONFIG
 /* v3 (M1): inject RX (replay) + observability per-rule */
 #define NL_IOCTL_INJECT_RX  NL_CODE(0x80b)
 #define NL_IOCTL_RULEHITS   NL_CODE(0x80c)
+/* v4 (M3): tabel aksi netem per rule */
+#define NL_IOCTL_POLICY_EX  NL_CODE(0x80d)
+
+/* v4 (M3): observability antrean delay (netem) */
+#define NL_IOCTL_DELAYSTAT  NL_CODE(0x80e)
 
 #define NL_ABI_MAGIC   0x31504C4Eu   /* 'NLP1' */
 #define NL_ABI_VERSION ((1UL << 16) | 0UL)
@@ -207,6 +212,37 @@ typedef struct _NL_RULEHITS {
     ULONG64 BlockTx;
     ULONG64 BlockRx;
 } NL_RULEHITS, *PNL_RULEHITS;
+
+/* v4 (M3): aksi netem per rule. Tabel EX terpisah dari tabel lama 456 B
+ * (yang tidak boleh berubah); ketika EX aktif (Count > 0), evaluasi frame
+ * SELURUHNYA lewat EX dan tabel lama tidak dipakai; Count = 0 mengembalikan
+ * kasus ke tabel lama. */
+#define NL_ACTION_ALLOW     0
+#define NL_ACTION_BLOCK     1
+#define NL_ACTION_DELAY     2
+#define NL_ACTION_DROP_PCT  3
+#define NL_ACTION_RATE      4
+
+typedef struct _NL_POLICY_RULE_EX {
+    NL_POLICY_RULE R;       /* 28 B tamplate rule v1 */
+    ULONG   Action;         /* NL_ACTION_* */
+    ULONG   DelayMs;        /* NL_ACTION_DELAY */
+    ULONG   DropPct;        /* 0..100 (NL_ACTION_DROP_PCT) */
+    ULONG   RateKbps;       /* NL_ACTION_RATE (0 = tanpa limit) */
+} NL_POLICY_RULE_EX, *PNL_POLICY_RULE_EX;
+
+typedef struct _NL_POLICY_EX {
+    ULONG   Count;              /* <= NL_POLICY_MAX_RULES; 0 = nonaktif */
+    ULONG   Enabled;            /* bitmask NL_POLICY_EN_* */
+    NL_POLICY_RULE_EX Rules[NL_POLICY_MAX_RULES];
+} NL_POLICY_EX, *PNL_POLICY_EX;
+
+/* v4: status antrean delay — Pending = item yang masih menunggu due,
+ * Fired = total item yang sudah matang (di-forward/indicate ulang). */
+typedef struct _NL_DELAY_STAT {
+    ULONG64 Pending;
+    ULONG64 Fired;
+} NL_DELAY_STAT, *PNL_DELAY_STAT;
 
 /* ----------------------------------------------------------------
  * v2: ring shared-memory zero-copy per adapter

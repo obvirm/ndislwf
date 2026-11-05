@@ -55,6 +55,12 @@ extern LIST_ENTRY          FilterModuleList;
 struct _MS_FILTER;
 VOID        NlRingInit(struct _MS_FILTER *pFilter);
 BOOLEAN     NlPolicyEval(PUCHAR Data, ULONG Len, ULONG Dir);
+BOOLEAN     NlPolicyDecide(PUCHAR Data, ULONG Len, ULONG Dir,
+                            PULONG RuleIdxOut, PULONG ActionOut, PULONG DelayMsOut);
+VOID        NlPolicyExSet(const PNL_POLICY_EX Src);
+VOID        NlDelayInit(VOID);
+VOID        NlDelayDrain(struct _MS_FILTER *pFilter);
+VOID        NlDelayUnload(VOID);
 VOID        NlTxCapture(struct _MS_FILTER *pFilter, PUCHAR Data, ULONG Len);
 VOID        NlRxCapture(struct _MS_FILTER *pFilter, PUCHAR Data, ULONG Len);
 VOID        NlPolicySet(const PNL_POLICY Src);
@@ -105,6 +111,10 @@ extern volatile LONG64     NlBlocked;
 extern volatile LONG64     NlBlockedTx;
 extern volatile LONG64     NlBlockedRx;
 extern volatile LONG64     NlRuleHits[NL_POLICY_MAX_RULES];
+/* v4: item yang sudah matang keluar antrean delay netem */
+extern volatile LONG64     NlDelayFired;
+/* v4: item yang masih menunggu due di antrean delay */
+extern volatile LONG64     NlDelayCount;
 
 extern LONG                NlInstanceCounter;
 
