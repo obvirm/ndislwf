@@ -33,7 +33,7 @@ C_ASSERT(sizeof(nl_ring_entry_t) == 1524);
 C_ASSERT(sizeof(nl_inject_t)     == 1524);
 C_ASSERT(sizeof(nl_mode_t)       == 8);
 C_ASSERT(sizeof(nl_policy_t)     == 456);
-C_ASSERT(sizeof(nl_shm_hdr_t)    == 80);
+C_ASSERT(sizeof(nl_shm_hdr_t)    == 96);
 C_ASSERT(NL_SHM_BYTES          == (128u + 2u * 1024u * 1524u));
 
 static uint32_t g_adapter = 0;
@@ -536,6 +536,120 @@ tPolicyRx(void)
     return 1;
 }
 
+static volatile LONG g_chaosStop;
+static void chInject(void *arg);
+static void chSend(void *arg);
+
+static int
+tBench(int seconds)
+/*++  M2 batch drain async. Dua fase, masing-masing `seconds` detik, 4 thread
+     socket memompa frame stack TX nyata (nl_inject bypass capture):
+       A) drain READ_RING (copy, batch max 32/ioctl)
+       B) drain zero-copy SHM (tail app langsung di shm, event coalesced)
+     Diukur: frame terdrain, pps, jumlah wake event, rasio paket-per-wake. --*/
+{
+    nl_stats_t s0, s1;
+    VOID *va;
+    volatile nl_shm_hdr_t *hdr;
+    uint64_t evh = 0;
+    int r, i;
+    uintptr_t ths[4];
+    ULONGLONG t0, pA, pB, dur;
+    LONG64 totalA = 0, totalB = 0;
+    UINT wake0, wakeD;
+
+    va = NULL;
+    hdr = NULL;
+    dur = (ULONGLONG)seconds * 1000u;
+    memset(&s0, 0, sizeof s0); memset(&s1, 0, sizeof s1);
+    (void)nl_stats(NULL, &s0);
+    if (nl_set_mode(g_adapter, NL_MODE_RX | NL_MODE_TX) != 0)
+    {
+        FAIL("bench: set_mode");
+        return 0;
+    }
+
+    /* Fase A: drain lama (READ_RING); jangkar load = socket stack TX nyata
+     * (nl_inject TX bypass capture, lihat lesson tCapture). */
+    g_chaosStop = 0;
+    printf("      bench: fase A mulai (mode=%08x)\n", NL_MODE_RX | NL_MODE_TX);
+    for (i = 0; i < 4; ++i)
+    {
+        ths[i] = _beginthread(chSend, 0, (void *)(uintptr_t)(10 + i));
+    }
+    t0 = qps();
+    while (qps() - t0 < dur)
+    {
+        nl_ring_entry_t rb[32];
+        int rn = 0;
+        int e = nl_read_ring(NULL, rb, 32, &rn);
+        if (e == 0) totalA += rn;
+    }
+    pA = qps() - t0; if (pA == 0) pA = 1;
+    printf("      bench: fase A selesai totalA=%lld ms=%llu\n",
+           (long long)totalA, (unsigned long long)pA);
+
+    /* Fase B: drain zero-copy SHM + event coalesced */
+    va = VirtualAlloc(NULL, NL_SHM_BYTES, MEM_COMMIT | MEM_RESERVE,
+                      PAGE_READWRITE);
+    r = (va != NULL) ? nl_shm_map(g_adapter, va, NL_SHM_BYTES) : -1;
+    CHECK("bench: map shm", r == 0);
+    if (r != 0)
+    {
+        g_chaosStop = 1;
+        VirtualFree(va, 0, MEM_RELEASE);
+        (void)nl_set_mode(g_adapter, 0);
+        return 0;
+    }
+    hdr = (volatile nl_shm_hdr_t *)va;
+    (void)nl_shm_event(g_adapter, &evh);
+    printf("      bench: fase B mulai events=%llu\n", (unsigned long long)evh);
+    wake0 = hdr->tx_wake + hdr->rx_wake;
+    t0 = qps();
+    {
+        ULONG rounds = 0;
+        /* drain diberi drift (Sleep tiap 8 batch) sengaja: coalescing
+         * event tervisible hanya saat backlog menumpuk; consumer instan
+         * menghasilkan 1 wake per paket (wasEmpty tiap burst). */
+        while (qps() - t0 < dur)
+        {
+            LONG tt = hdr->tx_tail, th = hdr->tx_head;
+            LONG rt = hdr->rx_tail, rh = hdr->rx_head;
+            LONG n;
+            n = (th - tt) & (NL_RING_ENTRIES - 1);
+            if (n != 0) { totalB += n; hdr->tx_tail = th; }
+            n = (rh - rt) & (NL_RING_ENTRIES - 1);
+            if (n != 0) { totalB += n; hdr->rx_tail = rh; }
+            if ((++rounds & 7u) == 0) Sleep(1);
+        }
+    }
+    pB = qps() - t0; if (pB == 0) pB = 1;
+
+    g_chaosStop = 1;
+    Sleep(400);
+    wakeD = hdr->tx_wake + hdr->rx_wake - wake0;
+    (void)nl_shm_unmap(g_adapter);
+    (void)nl_set_mode(g_adapter, 0);
+    VirtualFree(va, 0, MEM_RELEASE);
+    (void)nl_stats(NULL, &s1);
+
+    {
+        double ppsA = (double)totalA * 1000.0 / (double)pA;
+        double ppsB = (double)totalB * 1000.0 / (double)pB;
+        double perwake = (wakeD == 0) ? 0.0 : ((double)totalB / (double)wakeD);
+        printf("      bench: A(READ_RING) drain=%lld pps=%.0f | "
+               "B(SHM) drain=%lld pps=%.0f wakes=%u paket/wake=%.1f "
+               "| cap delta=%llu drop=%llu\n",
+               (long long)totalA, ppsA, (long long)totalB, ppsB, wakeD, perwake,
+               (unsigned long long)(s1.tx_captured + s1.rx_captured -
+                                    s0.tx_captured - s0.rx_captured),
+               (unsigned long long)s1.dropped);
+        CHECK("bench: drain shm aktif", totalB > 0);
+        CHECK("bench: paket/wake >= 5", perwake >= 5.0);
+    }
+    return 1;
+}
+
 static int
 tShm(int seconds)
 {
@@ -696,6 +810,32 @@ chInject(void *arg)
     printf("      chaos inject: %llu frame\n", c);
 }
 
+static void
+chSend(void *arg)
+{
+    WSADATA wsa;
+    SOCKET sd;
+    struct sockaddr_in sa;
+    DWORD br = 1;
+    const char pay[128] = "nlstress-bench-load";
+    ULONGLONG c = 0;
+    (void)arg;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
+    sd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sd == INVALID_SOCKET) { WSACleanup(); return; }
+    (void)setsockopt(sd, SOL_SOCKET, SO_BROADCAST, (char *)&br, sizeof br);
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((uint16_t)(47300 + (int)(uintptr_t)arg));
+    sa.sin_addr.s_addr = 0xFFFFFFFFu;
+    for (c = 0; !g_chaosStop; ++c) {
+        (void)sendto(sd, pay, sizeof pay, 0, (SOCKADDR *)&sa, sizeof sa);
+        if ((c & 0x3F) == 0) Sleep(0);
+    }
+    closesocket(sd);
+    WSACleanup();
+}
+
 static int
 tChaos(int seconds)
 {
@@ -739,26 +879,28 @@ static int
 tFull(void)
 {
     int rc;
-    printf("=== (1/8) version & enum ===\n");
+    printf("=== (1/9) version & enum ===\n");
     if (!tVersion()) { printf("GAGAL early\n"); return 3; }
     (void)tEnum();
     (void)tStats();
-    printf("=== (2/8) capture 3s ===\n");
+    printf("=== (2/9) capture 3s ===\n");
     (void)tCapture(3);
-    printf("=== (3/8) inject 4000 ===\n");
+    printf("=== (3/9) inject 4000 ===\n");
     (void)tInject(4000);
-    printf("=== (4/8) policy blok TX ===\n");
+    printf("=== (4/9) policy blok TX ===\n");
     (void)tPolicy();
     (void)tPolicy2();
-    printf("=== (5/8) inject RX ===\n");
+    printf("=== (5/9) inject RX ===\n");
     (void)tInjectRx();
-    printf("=== (6/8) hit per rule ===\n");
+    printf("=== (6/9) hit per rule ===\n");
     (void)tRuleHits();
-    printf("=== (7/8) policy blok RX ===\n");
+    printf("=== (7/9) policy blok RX ===\n");
     (void)tPolicyRx();
-    printf("=== (8/8) shm event 3s ===\n");
+    printf("=== (8/9) shm event 3s ===\n");
     (void)tShm(3);
-    printf("=== (x/8) chaos 20s ===\n");
+    printf("=== (9/9) bench drain 2+2s ===\n");
+    (void)tBench(2);
+    printf("=== (x/9) chaos 20s ===\n");
     (void)tChaos(20);
     printf("=== RINGKASAN: pass=%d fail=%d ===\n", g_pass, g_fail);
     rc = (g_fail == 0) ? 0 : 2;
@@ -789,6 +931,7 @@ main(int argc, char **argv)
     else if (!strcmp(cmd, "hits"))    r = tRuleHits()  ? 0 : 7;
     else if (!strcmp(cmd, "policyrx"))r = tPolicyRx()  ? 0 : 8;
     else if (!strcmp(cmd, "shm"))     r = tShm(atoi(argv[2]));
+    else if (!strcmp(cmd, "bench"))   r = tBench(atoi(argv[2]));
     else if (!strcmp(cmd, "chaos"))   r = tChaos(atoi(argv[2]));
     else if (!strcmp(cmd, "full"))    r = tFull();
     else { printf("mode tidak dikenal: %s\n", cmd); r = 9; }

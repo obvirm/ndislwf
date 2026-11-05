@@ -213,7 +213,7 @@ NL_API int nl_clear(void)
 /* --- API v2 --------------------------------------------------------------- */
 
 static_assert(sizeof(nl_policy_t) == 456, "layout nl_policy harus 456");
-static_assert(sizeof(nl_shm_hdr_t) == 80, "layout nl_shm_hdr harus 80");
+static_assert(sizeof(nl_shm_hdr_t) == 96, "layout nl_shm_hdr harus 96");
 static_assert(NL_SHM_BYTES == 128 + 2u * 1024u * 1524u, "NL_SHM_BYTES harus 3117184");
 
 NL_API int nl_policy_set(const nl_policy_t* policy)

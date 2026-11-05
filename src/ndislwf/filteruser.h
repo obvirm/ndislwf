@@ -240,6 +240,11 @@ typedef struct _NL_SHM_HDR {
     volatile ULONG64 RxBytesMirror;
     volatile ULONG64 CapTxMirror;
     volatile ULONG64 CapRxMirror;
+    /* v3 M2: penghitung kejadian wake (event dikirim koales — bukan per
+     * paket); struktur di bawah nulla jadi pad sampai 128 B kepala. */
+    volatile ULONG  TxWake;             /* sinyal event arah TX */
+    volatile ULONG  RxWake;             /* sinyal event arah RX */
+    volatile ULONG  WakePad[2];
 } NL_SHM_HDR, *PNL_SHM_HDR;
 
 typedef struct _NL_MAP_RING {

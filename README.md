@@ -70,6 +70,12 @@ dihitung drop. Saat mapped, capture tak lagi menyalin ke ring internal;
 otomatis saat `FILE_OBJECT` app ditutup (IRP_MJ_CLOSE), adapter detach,
 atau unload.
 
+Event coalesced (M2): kernel menyinyal event saat ring berubah
+empty→nonempty ATAU tiap 64 entri baru — bukan per paket. Counter
+`TxWake/RxWake` di header menghitung sinyal per arah; consumer instan
+menghasilkan 1 wake/paket (wasEmpty tiap burst), consumer tertinggal
+menghasilkan 1 wake/batch (paket/wake ≈ 60 saat bench 4 socket drift).
+
 ### Flow cache
 
 Keputusan policy per-5-tuple TCP/UDP IPv4 di-cache (16384 entri,

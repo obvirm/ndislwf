@@ -134,7 +134,8 @@ typedef struct nl_rule_hits {
     uint64_t block_rx;
 } nl_rule_hits_t;
 
-/* 80 byte struct (band header 128 byte): kepala SHM; head kernel, tail app */
+/* 96 byte struct (band header 128 byte): kepala SHM; head kernel, tail app.
+ * TxWake/RxWake (v3 M2): jumlah sinyal event coalesced per arah. */
 typedef struct nl_shm_hdr {
     uint32_t magic;
     uint32_t version;
@@ -149,6 +150,9 @@ typedef struct nl_shm_hdr {
     volatile uint64_t rx_bytes_mirror;
     volatile uint64_t cap_tx_mirror;
     volatile uint64_t cap_rx_mirror;
+    volatile uint32_t tx_wake;      /* sinyal event TX (coalesced) */
+    volatile uint32_t rx_wake;      /* sinyal event RX (coalesced) */
+    uint32_t wake_pad[2];
 } nl_shm_hdr_t;
 
 typedef struct nl_map_ring {

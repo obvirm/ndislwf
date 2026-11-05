@@ -2449,6 +2449,9 @@ NlTxCapture(
             }
             else
             {
+                LONG tailMasked = (LONG)hdr->TxTail & (LONG)mask;
+                BOOLEAN wasEmpty = (pFilter->NlShmTxHead == tailMasked);
+
                 ring[slot].Len = Len;
                 ring[slot].Flags = NL_RING_TX;
                 NdisMoveMemory(ring[slot].Data, Data, Len);
@@ -2457,8 +2460,14 @@ NlTxCapture(
                 InterlockedIncrement64(&pFilter->NlCapTx);
                 hdr->CapTxMirror = (UINT64)pFilter->NlCapTx;
                 hdr->TxBytesMirror = (UINT64)pFilter->NlTxBytes;
-                if (pFilter->NlShmEvent != NULL)
+                /* v3 M2: event coalesced — sinyal hanya saat ring kering ->
+                 * berisi (awal batch) atau tiap 64 entri baru, BUKAN per
+                 * paket; TxWake menjumlah berapa sinyal terkirim. */
+                if (pFilter->NlShmEvent != NULL &&
+                    (wasEmpty ||
+                     (((ULONG)((slot + 1) - tailMasked) & mask) & 63) == 0))
                 {
+                    InterlockedIncrement((volatile LONG *)&hdr->TxWake);
                     KeSetEvent(pFilter->NlShmEvent, IO_NO_INCREMENT, FALSE);
                 }
             }
@@ -2504,6 +2513,9 @@ NlRxCapture(
             }
             else
             {
+                LONG tailMasked = (LONG)hdr->RxTail & (LONG)mask;
+                BOOLEAN wasEmpty = (pFilter->NlShmRxHead == tailMasked);
+
                 ring[slot].Len = Len;
                 ring[slot].Flags = NL_RING_RX;
                 NdisMoveMemory(ring[slot].Data, Data, Len);
@@ -2512,8 +2524,12 @@ NlRxCapture(
                 InterlockedIncrement64(&pFilter->NlCapRx);
                 hdr->CapRxMirror = (UINT64)pFilter->NlCapRx;
                 hdr->RxBytesMirror = (UINT64)pFilter->NlRxBytes;
-                if (pFilter->NlShmEvent != NULL)
+                /* v3 M2: event coalesced arah RX (sama seperti TX). */
+                if (pFilter->NlShmEvent != NULL &&
+                    (wasEmpty ||
+                     (((ULONG)((slot + 1) - tailMasked) & mask) & 63) == 0))
                 {
+                    InterlockedIncrement((volatile LONG *)&hdr->RxWake);
                     KeSetEvent(pFilter->NlShmEvent, IO_NO_INCREMENT, FALSE);
                 }
             }
@@ -2763,6 +2779,8 @@ NlShmInstall(
     sh->RxBytesMirror = 0;
     sh->CapTxMirror = 0;
     sh->CapRxMirror = 0;
+    sh->TxWake = 0;
+    sh->RxWake = 0;
 
     KeAcquireSpinLock(&pFilter->NlTxRingLock, &OldIrql);
     if (pFilter->NlShmMapped || pFilter->NlDetached)

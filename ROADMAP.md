@@ -7,15 +7,18 @@
 
 ## Milestone (urut dari paling mudah; tanda ✅ = tuntas)
 
-### M1 ✅ Blok RX + counter hit per rule + inject RX (replay)   ← SEDANG
+### M1 ✅ Blok RX + counter hit per rule + inject RX (replay)
 - [x] `NL_POLICY_EN_RX` benar-benar dievaluasi di path RX (`NlPolicyEval(..., NL_POLICY_EN_RX)`) — dulu bit-nya hanya TX.
 - [x] Counter hit per rule (`NlRuleHits[16]`, u64) — ioctl baru `NL_IOCTL_RULEHITS`.
 - [x] `NL_IOCTL_INJECT_RX`: inject frame masuk jalur RX (`NdisFIndicateReceiveNetBufferLists`) — alat replay/test yang legacy filter tidak punya; sekaligus membuat test policy RX deterministik.
 - [x] Counter `NlBlockedRx` terpisah; keduanya (TX+RX) masuk stats.Dropped.
 
-### M2 Batch drain async
-- Ring SQ/CQ di atas shm v2: user drain batch N paket/ioctl dengan event per batch (bukan per paket).
-- Target latensi & pps capture: 5–10× o_inject saat ini.
+### M2 ✅ Batch drain async (event coalesced)
+- [x] Kernel: event hanya sinyal saat empty→nonempty (awal batch) ATAU tiap 64 entri baru — bukan per paket (filter.c NlTxCapture/NlRxCapture).
+- [x] Counter wake per arah di shm header: `TxWake/RxWake` (u32; header 128-B pad band, 80→96 B).
+- [x] nlstress `bench`: fase A drain READ_RING (copy, ≤32/ioctl) vs fase B drain zero-copy SHM + drift konsumen sengaja agar backlog tampak.
+- [x] Hasil guest (4 thread socket stack-TX): SHM drain 35–38k pps vs READ_RING 13–22k pps (`nlstress bench 3` = 2.7×; `full` = 1.7×); **paket/wake ≈ 60** (para wake per batch, bukan per paket); drop=0 pure bench.
+- catatan: consumer instan (tidak pernah di belakang) menghasilkan 1 wake/paket (wasEmpty tiap burst) — coalescing tervisible di skenario overload; itulah bentuknya yang diinginkan untuk latensi rendah.
 
 ### M3 Aksi netem dinamis per rule
 - `NL_ACTION = ALLOW|BLOCK|MIRROR|REDIRECT|DELAY|DROP_PCT|RATE_LIMIT`.
