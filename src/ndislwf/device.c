@@ -559,6 +559,23 @@ FilterDeviceIoControl(
             break;
         }
 
+        case NL_IOCTL_PROGRAM:
+        {
+            PNL_VM_PROG pv = (PNL_VM_PROG)Irp->AssociatedIrp.SystemBuffer;
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+
+            if (InLen != sizeof(NL_VM_PROG) || pv == NULL)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            NlVmSet(pv);
+            Status = STATUS_SUCCESS;
+            InfoLength = 0;
+            break;
+        }
+
         case NL_IOCTL_INJECT_RX:
         {
             PNL_INJECT pj = (PNL_INJECT)Irp->AssociatedIrp.SystemBuffer;

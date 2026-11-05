@@ -115,6 +115,9 @@ typedef struct _FILTER_WRITE_CONFIG
 /* v4 (M3): observability antrean delay (netem) */
 #define NL_IOCTL_DELAYSTAT  NL_CODE(0x80e)
 
+/* v5 (M4): VM mini BPF klasik — rule terkompilasi */
+#define NL_IOCTL_PROGRAM    NL_CODE(0x80f)
+
 #define NL_ABI_MAGIC   0x31504C4Eu   /* 'NLP1' */
 #define NL_ABI_VERSION ((1UL << 16) | 0UL)
 
@@ -243,6 +246,80 @@ typedef struct _NL_DELAY_STAT {
     ULONG64 Pending;
     ULONG64 Fired;
 } NL_DELAY_STAT, *PNL_DELAY_STAT;
+
+/* ----------------------------------------------------------------
+ * v5 (M4): VM mini BPF klasik
+ * ----------------------------------------------------------------
+ * Bytecode BPF-c klasik (lsb/ldh/ldw/ldi/ldm, jmp jeq/jgt/jge/jset,
+ * alu, ret, tax/txa) seperti cBPF/seccomp: register A, X, 16 scratch
+ * slot M[]. Aksi keluar RET: nilai 32-bit = ACTION | (Param << 8),
+ * ACTION = NL_ACTION_*; Param: DELAY ms, DROP_PCT %, RATE kbps.
+ * Ketika program aktif, tabel EX/policy lama TIDAK dievaluasi;
+ * Count = 0 mematikan VM dan mengembalikan ke tabel.
+ * Hit program masuk NlRuleHits[0] (slot rule-0 dipinjam VM). */
+#define NL_VM_MAX_INSNS     64
+
+/* classes */
+#define NL_VM_CL_LD         0x00
+#define NL_VM_CL_LDX        0x01
+#define NL_VM_CL_ST         0x02
+#define NL_VM_CL_STX        0x03
+#define NL_VM_CL_ALU        0x04
+#define NL_VM_CL_JMP        0x05
+#define NL_VM_CL_RET        0x06
+#define NL_VM_CL_MISC       0x07
+
+/* ld/ldx sizes (W = 0) */
+#define NL_VM_SZ_H          0x08    /* 16-bit */
+#define NL_VM_SZ_B          0x10    /* 8-bit */
+
+/* mode ENCODING klasik: LD/SZ IMM = mode 0; ABS=0x20; IND=0x40;
+ * MEM=0x60; LEN=0x80 */
+#define NL_VM_MD_IMM        0x00
+#define NL_VM_MD_ABS        0x20
+#define NL_VM_MD_IND        0x40
+#define NL_VM_MD_MEM        0x60
+#define NL_VM_MD_LEN        0x80
+
+/* alu/jmp ops (Code & 0xF0) + Jmp/A source X bit (Code & 0x08) */
+#define NL_VM_OP_ADD        0x00
+#define NL_VM_OP_SUB        0x10
+#define NL_VM_OP_MUL        0x20
+#define NL_VM_OP_DIV        0x30
+#define NL_VM_OP_OR         0x40
+#define NL_VM_OP_AND        0x50
+#define NL_VM_OP_LSH        0x60
+#define NL_VM_OP_RSH        0x70
+#define NL_VM_OP_NEG        0x80
+#define NL_VM_JA            0x00
+#define NL_VM_JEQ           0x10
+#define NL_VM_JGT           0x20
+#define NL_VM_JGE           0x30
+#define NL_VM_JSET          0x40
+#define NL_VM_SRC_X         0x08
+
+/* ret */
+#define NL_VM_RTA           0x00    /* ret: keluar = A */
+#define NL_VM_RTK           0x10    /* ret: keluar = K */
+
+/* misc */
+#define NL_VM_TAX           0x00    /* X = A */
+#define NL_VM_TXA           0x80    /* A = X */
+
+#define NL_VM_SCRATCH       16
+
+typedef struct _NL_VM_INSN {
+    USHORT  Code;
+    UCHAR   Jt;         /* offset true (relatif ins[i+1]) */
+    UCHAR   Jf;         /* offset false */
+    ULONG   K;
+} NL_VM_INSN, *PNL_VM_INSN;
+
+typedef struct _NL_VM_PROG {
+    ULONG       Count;          /* <= NL_VM_MAX_INSNS; 0 = nonaktif */
+    ULONG       Enabled;        /* bitmask NL_POLICY_EN_* */
+    NL_VM_INSN  Insns[NL_VM_MAX_INSNS];
+} NL_VM_PROG, *PNL_VM_PROG;
 
 /* ----------------------------------------------------------------
  * v2: ring shared-memory zero-copy per adapter

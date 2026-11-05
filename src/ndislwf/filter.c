@@ -56,6 +56,11 @@ volatile LONG64    NlRuleHits[NL_POLICY_MAX_RULES];
  * ---------------------------------------------------------------- */
 static NL_POLICY_EX        NlPolicyEx;
 static volatile LONG       NlExEnabled = 0;      /* mask = Enabled EX; 0 = EX mati */
+static NL_VM_PROG          NlVm;
+static volatile LONG       NlVmActive = 0;       /* 1 = program VM tayang */
+static volatile LONG       NlVmEn = 0;           /* mask arah program VM */
+VOID NlVmSet(IN const PNL_VM_PROG Src);
+static BOOLEAN NlVmRun(IN const PUCHAR Data, IN ULONG Len, OUT PULONG RetOut);
 static ULONG               NlRngSeed[NL_POLICY_MAX_RULES];
 static ULONG64             NlRateTok[NL_POLICY_MAX_RULES];
 static LARGE_INTEGER       NlRateLast[NL_POLICY_MAX_RULES];
@@ -103,13 +108,20 @@ NlDelayDpcFn(
     );
 
 /* v4: gerbang arah (gate) yang CONSISTEN dengan pemilihan tabel aktif:
- * EX hidup = mask Enabled EX; EX mati = mask policy lama. */
+ * VM aktif = mask Enabled program; EX hidup = mask Enabled EX;
+ * keduanya mati = mask policy lama. */
 static ULONG
 NlGate(
     IN ULONG Dir
     )
 {
     ULONG Ext = (ULONG)NlExEnabled;
+
+    /* v5 (M4): program VM menggantikan SEMUA tabel, mask ikut program */
+    if (InterlockedCompareExchange(&NlVmActive, 0, 0) != 0)
+    {
+        return ((ULONG)NlVmEn) & Dir;
+    }
 
     if (Ext != 0)
     {
@@ -3878,12 +3890,137 @@ NlPolicyDecide(
         *DelayMsOut = DelayMs;
         return FALSE;
     }
-    if (Data[12] != 0x08 || Data[13] != 0x00)
+
+    /* ----- v5 (M4): program VM (rule terkompilasi) — mengganti SEMUA tabel
+     * saat aktif. Decode ret: ACTION | (Param << 8); hit program masuk
+     * NlRuleHits[0]; DROP_PCT/RATE pinjam slot netem 15. --*/
+    if (InterlockedCompareExchange(&NlVmActive, 0, 0) != 0)
     {
+        ULONG VmRet;
+
+        if (NlVmRun(Data, Len, &VmRet))
+        {
+            ULONG Act = VmRet & 0xFF;
+            ULONG Param = VmRet >> 8;
+            switch (Act)
+            {
+                case NL_ACTION_BLOCK:
+                {
+                    InterlockedIncrement64(&NlRuleHits[0]);
+                    InterlockedIncrement64(&NlBlocked);
+                    if (Dir == NL_POLICY_EN_RX)
+                    {
+                        InterlockedIncrement64(&NlBlockedRx);
+                    }
+                    else
+                    {
+                        InterlockedIncrement64(&NlBlockedTx);
+                    }
+                    blocked = TRUE;
+                    Action = NL_ACTION_BLOCK;
+                    break;
+                }
+                case NL_ACTION_DELAY:
+                {
+                    ULONG delay = (Param > 60000UL) ? 60000UL : Param;
+
+                    if (delay != 0)
+                    {
+                        InterlockedIncrement64(&NlRuleHits[0]);
+                        Action = NL_ACTION_DELAY;
+                        DelayMs = delay;
+                    }
+                    break;
+                }
+                case NL_ACTION_DROP_PCT:
+                {
+                    ULONG s = NlRngSeed[NL_POLICY_MAX_RULES - 1];
+
+                    s = s * 1103515245UL + 12345UL;
+                    NlRngSeed[NL_POLICY_MAX_RULES - 1] = s;
+                    if (Param > 0 && ((s >> 16) & 0xFFFF) % 100UL < Param)
+                    {
+                        InterlockedIncrement64(&NlRuleHits[0]);
+                        InterlockedIncrement64(&NlBlocked);
+                        if (Dir == NL_POLICY_EN_RX)
+                        {
+                            InterlockedIncrement64(&NlBlockedRx);
+                        }
+                        else
+                        {
+                            InterlockedIncrement64(&NlBlockedTx);
+                        }
+                        blocked = TRUE;
+                        Action = NL_ACTION_BLOCK;
+                    }
+                    break;
+                }
+                case NL_ACTION_RATE:
+                {
+                    const ULONG Vs = NL_POLICY_MAX_RULES - 1;
+                    LARGE_INTEGER Now, Freq;
+                    ULONG64 rateBps, burstCap, elapsed;
+
+                    rateBps = (ULONG64)Param * 128ULL;
+                    if (Param == 0)
+                    {
+                        /* "0 = tanpa limit": melewati saja */
+                        break;
+                    }
+
+                    /* burst = kapasitas 1 detik token */
+                    burstCap = rateBps;
+
+                    Now = KeQueryPerformanceCounter(&Freq);
+
+                    elapsed = (ULONG64)Now.QuadPart - (ULONG64)NlRateLast[Vs].QuadPart;
+                    /* QPC tick → token: tick * rateBPS / tick-per-detik */
+                    if (Freq.QuadPart != 0)
+                    {
+                        elapsed = elapsed * rateBps / (ULONG64)Freq.QuadPart;
+                    }
+                    else
+                    {
+                        elapsed = 0;
+                    }
+
+                    NlRateTok[Vs] += elapsed;
+                    if (NlRateTok[Vs] > burstCap)
+                    {
+                        NlRateTok[Vs] = burstCap;
+                    }
+                    NlRateLast[Vs].QuadPart = Now.QuadPart;
+
+                    if (NlRateTok[Vs] >= Len)
+                    {
+                        NlRateTok[Vs] -= Len;
+                    }
+                    else
+                    {
+                        InterlockedIncrement64(&NlRuleHits[0]);
+                        InterlockedIncrement64(&NlBlocked);
+                        if (Dir == NL_POLICY_EN_RX)
+                        {
+                            InterlockedIncrement64(&NlBlockedRx);
+                        }
+                        else
+                        {
+                            InterlockedIncrement64(&NlBlockedTx);
+                        }
+                        blocked = TRUE;
+                        Action = NL_ACTION_BLOCK;
+                    }
+                    break;
+                }
+                default:
+                    /* NL_ACTION_ALLOW (0) + aksi tidak dikenal = passthrough */
+                    break;
+            }
+        }
         *RuleIdxOut = RuleIdx;
         *ActionOut = Action;
         *DelayMsOut = DelayMs;
-        return FALSE; /* hanya IPv4 */
+        return blocked;
     }
 
     if (NlExEnabled == 0)
@@ -3904,6 +4041,13 @@ NlPolicyDecide(
             *ActionOut = Action;
             *DelayMsOut = DelayMs;
             return FALSE;
+        }
+        if (Data[12] != 0x08 || Data[13] != 0x00)
+        {
+            *RuleIdxOut = RuleIdx;
+            *ActionOut = Action;
+            *DelayMsOut = DelayMs;
+            return FALSE; /* tabel lama hanya IPv4; non-IP hanya utk EX/VM */
         }
 
         off = 14;
@@ -4239,6 +4383,258 @@ NlPolicyExSet(
     KeReleaseSpinLock(&NlFlowLock, OldIrql);
 
     InterlockedExchange(&NlExEnabled, (LONG)Ex);
+}
+
+VOID
+NlVmSet(
+    IN const PNL_VM_PROG Src
+    )
+/*++  Publish program VM: Count=0 mematikan (kembali ke tabel EX/lama).
+     Program di-copy oalah NlFlowLock agar evaluator baca atomik. --*/
+{
+    KIRQL OldIrql;
+    ULONG En;
+
+    if (Src == NULL)
+    {
+        return;
+    }
+    if (Src->Count > NL_VM_MAX_INSNS)
+    {
+        return;
+    }
+    En = (Src->Count > 0) ? (Src->Enabled ? Src->Enabled : NL_POLICY_EN_TX) : 0;
+
+    KeAcquireSpinLock(&NlFlowLock, &OldIrql);
+    NdisZeroMemory(&NlVm, sizeof(NlVm));
+    if (En != 0)
+    {
+        NdisMoveMemory(&NlVm, Src, sizeof(NlVm));
+    }
+    /* kalau VM mati, flow cache boleh dirajang ulang; selalu generasi+ */
+    InterlockedIncrement64(&NlFlowGen);
+    KeReleaseSpinLock(&NlFlowLock, OldIrql);
+
+    InterlockedExchange(&NlVmActive, (LONG)(En != 0));
+    InterlockedExchange(&NlVmEn, (LONG)En);
+}
+
+static ULONG
+NlVmLoad16(
+    IN const PUCHAR Data,
+    IN ULONG Len,
+    IN ULONG Off
+    )
+/*++  Load 16-bit big-endian; OOB = 0. --*/
+{
+    if (Off + 1 >= Len)
+    {
+        return 0;
+    }
+    return ((ULONG)Data[Off] << 8) | Data[Off + 1];
+}
+
+static ULONG
+NlVmLoad32(
+    IN const PUCHAR Data,
+    IN ULONG Len,
+    IN ULONG Off
+    )
+/*++  Load 32-bit big-endian; OOB = 0. --*/
+{
+    if (Off + 3 >= Len)
+    {
+        return 0;
+    }
+    return ((ULONG)Data[Off] << 24) | ((ULONG)Data[Off + 1] << 16) |
+           ((ULONG)Data[Off + 2] << 8) | (ULONG)Data[Off + 3];
+}
+
+static BOOLEAN
+NlVmRun(
+    IN const PUCHAR Data,
+    IN ULONG Len,
+    OUT PULONG RetOut
+    )
+/*++  Evaluator BPF-c klasik: register A/X, scratch M[16]. Program di-copy
+     ke stack (snapshot di bawah NlFlowLock — tidak pernah membaca struct
+     selagi NlVmSet menimpanya). Loads OOB = 0; pembagian nol = 0; lompatan
+     keluar program = ALLOW. Return TRUE dgn *RetOut = ACTION | (Param << 8). --*/
+{
+    NL_VM_INSN Ctx[NL_VM_MAX_INSNS];
+    KIRQL OldIrql;
+    ULONG A = 0, X = 0;
+    ULONG M[NL_VM_SCRATCH];
+    ULONG Count, i, Code;
+    int steps;
+
+    *RetOut = NL_ACTION_ALLOW;
+    if (InterlockedCompareExchange(&NlVmActive, 0, 0) == 0)
+    {
+        return FALSE;
+    }
+    if (Data == NULL)
+    {
+        return FALSE;
+    }
+
+    KeAcquireSpinLock(&NlFlowLock, &OldIrql);
+    Count = NlVm.Count;
+    if (Count != 0 && Count <= NL_VM_MAX_INSNS)
+    {
+        NdisMoveMemory(Ctx, NlVm.Insns, Count * sizeof(NL_VM_INSN));
+    }
+    KeReleaseSpinLock(&NlFlowLock, OldIrql);
+    if (Count == 0)
+    {
+        return FALSE;
+    }
+
+    RtlZeroMemory(M, sizeof(M));
+
+    for (i = 0, steps = 0; i < Count && steps++ < 100000; ++i)
+    {
+        Code = Ctx[i].Code;
+
+        switch (Code & 0x07U)   /* class */
+        {
+            case NL_VM_CL_LD:
+            case NL_VM_CL_LDX:
+            {
+                ULONG Val;
+                BOOLEAN ToX = ((Code & 0x07U) == NL_VM_CL_LDX);
+
+                if ((Code & NL_VM_MD_LEN) != 0)
+                {
+                    Val = Len;
+                }
+                else if ((Code & NL_VM_MD_MEM) == NL_VM_MD_MEM)
+                {
+                    if (Ctx[i].K >= NL_VM_SCRATCH)
+                    {
+                        *RetOut = NL_ACTION_ALLOW;
+                        return TRUE;
+                    }
+                    Val = M[Ctx[i].K];
+                }
+                else if ((Code & NL_VM_MD_ABS) != 0)
+                {
+                    ULONG Off = Ctx[i].K;
+                    if ((Code & NL_VM_MD_IND) != 0)
+                    {
+                        Off += X;
+                    }
+                    if ((Code & NL_VM_SZ_B) != 0)
+                    {
+                        Val = (Off < Len) ? (ULONG)Data[Off] : 0;
+                    }
+                    else if ((Code & NL_VM_SZ_H) != 0)
+                    {
+                        Val = NlVmLoad16(Data, Len, Off);
+                    }
+                    else
+                    {
+                        Val = NlVmLoad32(Data, Len, Off);
+                    }
+                }
+                else    /* MD_IMM */
+                {
+                    Val = Ctx[i].K;
+                }
+
+                if (ToX)
+                {
+                    X = Val;
+                }
+                else
+                {
+                    A = Val;
+                }
+                break;
+            }
+            case NL_VM_CL_ST:
+                if (Ctx[i].K < NL_VM_SCRATCH)
+                {
+                    M[Ctx[i].K] = A;
+                }
+                break;
+            case NL_VM_CL_STX:
+                if (Ctx[i].K < NL_VM_SCRATCH)
+                {
+                    M[Ctx[i].K] = X;
+                }
+                break;
+            case NL_VM_CL_ALU:
+            {
+                ULONG Op = Code & 0xF8U;
+                ULONG Src = ((Code & NL_VM_SRC_X) != 0) ? X : Ctx[i].K;
+
+                switch (Op)
+                {
+                    case NL_VM_OP_ADD: A += Src; break;
+                    case NL_VM_OP_SUB: A -= Src; break;
+                    case NL_VM_OP_MUL: A *= Src; break;
+                    case NL_VM_OP_DIV: A = (Src != 0) ? (A / Src) : 0; break;
+                    case NL_VM_OP_OR:  A |= Src; break;
+                    case NL_VM_OP_AND: A &= Src; break;
+                    case NL_VM_OP_LSH: A <<= (Src & 31); break;
+                    case NL_VM_OP_RSH: A >>= (Src & 31); break;
+                    case NL_VM_OP_NEG: A = (ULONG)(-(LONG)A); break;
+                    default: break;
+                }
+                break;
+            }
+            case NL_VM_CL_JMP:
+            {
+                ULONG Op = Code & 0xF8U;
+                ULONG Src = ((Code & NL_VM_SRC_X) != 0) ? X : Ctx[i].K;
+                BOOLEAN Take = FALSE;
+
+                if (Op == NL_VM_JA)
+                {
+                    i += Ctx[i].Jt;
+                }
+                else switch (Op)
+                {
+                    case NL_VM_JEQ:  Take = (A == Src); break;
+                    case NL_VM_JGT:  Take = (A > Src); break;
+                    case NL_VM_JGE:  Take = (A >= Src); break;
+                    case NL_VM_JSET: Take = ((A & Src) != 0); break;
+                    default: *RetOut = NL_ACTION_ALLOW; return TRUE;
+                }
+                if (Op != NL_VM_JA)
+                {
+                    i += Take ? Ctx[i].Jt : Ctx[i].Jf;
+                }
+                if (i >= Count)
+                {
+                    /* jatuh keluar program: ALLOW */
+                    return TRUE;
+                }
+                continue;
+            }
+            case NL_VM_CL_RET:
+            {
+                ULONG V = ((Code & NL_VM_RTK) != 0) ? Ctx[i].K : A;
+                *RetOut = V;
+                return TRUE;
+            }
+            case NL_VM_CL_MISC:
+            default:
+                if (Code == NL_VM_TAX)
+                {
+                    X = A;
+                }
+                else if (Code == NL_VM_TXA)
+                {
+                    A = X;
+                }
+                break;
+        }
+    }
+
+    *RetOut = NL_ACTION_ALLOW;
+    return TRUE;
 }
 
 VOID

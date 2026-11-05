@@ -58,6 +58,8 @@ BOOLEAN     NlPolicyEval(PUCHAR Data, ULONG Len, ULONG Dir);
 BOOLEAN     NlPolicyDecide(PUCHAR Data, ULONG Len, ULONG Dir,
                             PULONG RuleIdxOut, PULONG ActionOut, PULONG DelayMsOut);
 VOID        NlPolicyExSet(const PNL_POLICY_EX Src);
+/* v5 (M4): prog BPF klasik; Count=0 kembali ke tabel EX/lama */
+VOID        NlVmSet(const PNL_VM_PROG Src);
 VOID        NlDelayInit(VOID);
 VOID        NlDelayDrain(struct _MS_FILTER *pFilter);
 VOID        NlDelayUnload(VOID);

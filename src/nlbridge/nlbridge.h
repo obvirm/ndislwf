@@ -36,6 +36,7 @@ extern "C" {
 #define NL_IOC_RULEHITS   0x89002030u  /* fn 0x80c (v3) */
 #define NL_IOC_POLICY_EX  0x89002034u  /* fn 0x80d (v4/M3) */
 #define NL_IOC_DELAYSTAT  0x89002038u  /* fn 0x80e (v4/M3) */
+#define NL_IOC_PROGRAM    0x8900203Cu  /* fn 0x80f (v5/M4) */
 
 #define NL_ABI_MAGIC      0x31504C4Eu  /* 'NLP1' */
 #define NL_ABI_VERSION    0x00010000u  /* v1.0 */
@@ -154,6 +155,70 @@ typedef struct nl_delay_stat {
     uint64_t fired;                 /* sudah matang keluar antrean */
 } nl_delay_stat_t;
 
+/* --- v5: VM mini BPF klasik (M4) ------------------------------------------ */
+
+#define NL_VM_MAX_INSNS    64u
+#define NL_VM_SCRATCH      16u
+
+/* classes */
+#define NL_VM_CL_LD        0x00u
+#define NL_VM_CL_LDX       0x01u
+#define NL_VM_CL_ST        0x02u
+#define NL_VM_CL_STX       0x03u
+#define NL_VM_CL_ALU       0x04u
+#define NL_VM_CL_JMP       0x05u
+#define NL_VM_CL_RET       0x06u
+#define NL_VM_CL_MISC      0x07u
+
+/* sizes (W genap 0) */
+#define NL_VM_SZ_H         0x08u
+#define NL_VM_SZ_B         0x10u
+
+/* modes: IMM=0, ABS 0x20, IND 0x40, MEM 0x60, LEN 0x80 */
+#define NL_VM_MD_IMM       0x00u
+#define NL_VM_MD_ABS       0x20u
+#define NL_VM_MD_IND       0x40u
+#define NL_VM_MD_MEM       0x60u
+#define NL_VM_MD_LEN       0x80u
+
+/* alu/jmp ops */
+#define NL_VM_OP_ADD       0x00u
+#define NL_VM_OP_SUB       0x10u
+#define NL_VM_OP_MUL       0x20u
+#define NL_VM_OP_DIV       0x30u
+#define NL_VM_OP_OR        0x40u
+#define NL_VM_OP_AND       0x50u
+#define NL_VM_OP_LSH       0x60u
+#define NL_VM_OP_RSH       0x70u
+#define NL_VM_OP_NEG       0x80u
+#define NL_VM_JA           0x00u
+#define NL_VM_JEQ          0x10u
+#define NL_VM_JGT          0x20u
+#define NL_VM_JGE          0x30u
+#define NL_VM_JSET         0x40u
+#define NL_VM_SRC_X        0x08u
+
+/* ret + misc */
+#define NL_VM_RTA          0x00u
+#define NL_VM_RTK          0x10u
+#define NL_VM_TAX          0x00u
+#define NL_VM_TXA          0x80u
+
+/* 8 byte */
+typedef struct nl_vm_insn {
+    uint16_t code;
+    uint8_t  jt;                    /* offset true (relatif insn[i+1]) */
+    uint8_t  jf;
+    uint32_t k;
+} nl_vm_insn_t;
+
+/* 520 byte: prog ketika Count > 0, 0 = nonaktif (kembali ke tabel) */
+typedef struct nl_vm_prog {
+    uint32_t count;
+    uint32_t enabled;               /* bitmask NL_POLICY_EN_* */
+    nl_vm_insn_t insns[NL_VM_MAX_INSNS];
+} nl_vm_prog_t;
+
 /* 456 byte: set policy global */
 typedef struct nl_policy {
     uint32_t count;                 /* <= NL_POLICY_MAX_RULES */
@@ -239,6 +304,9 @@ NL_API int  nl_policy_ex_set(const nl_policy_ex_t* ex);
 
 /* v4: baca status antrean delay netem. 0 = sukses. */
 NL_API int  nl_delay_stat(nl_delay_stat_t* out);
+
+/* v5: pasang program VM (rule terkompilasi); count=0 mematikan. 0 = sukses. */
+NL_API int  nl_vm_set(const nl_vm_prog_t* prog);
 
 /* Suntik frame ke jalur RX (replay, v3). 0 = sukses. */
 NL_API int  nl_inject_rx(const void* data, uint32_t len);

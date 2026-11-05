@@ -27,12 +27,19 @@
 - DROP_PCT: RNG LCG per rule; RATE: token bucket per rule (burst = 1 s rate, refill QPC dibagi Freq).
 - Hasil guest: netem 4/4 + full 53/53 pass (block 100/100, drop50 ±2k, delay pending→fired=10 antrean kering, rate 256 kbps drop 393 dari 600 frame, burst 32 KB).
 
-### M4 VM mini BPF-style (rule terkompilasi)
+### M4 VM mini BPF-style (rule terkompilasi) ✅ 2026-11-06
 - Endi rule match bebas-field: user-space mengkompilasi `(match expr) → action` menjadi
-  bytecode kelas BPF-c klasik (ld/ldh/jump/ret), driver menyimpan § byte dan evaluator ~200 baris
-  (tanpa helper, tanpa reentrancy — di bawah NlFlowLock/MsFilterLock).
-- `NL_IOCTL_PROGRAM`: set program per adapter + fallback ke policy table lama.
-- Ketika program aktif, tabel rule 16-slot hanya fallback keceraman (compat).
+  bytecode kelas BPF klasik (ld/ldh/ldw/jump/ret, register A/X, scratch M[16]), evaluator
+  `NlVmRun` ~200 baris di driver — copy program ke stack di bawah NlFlowLock, OOB load = 0,
+  div-by-zero = 0, lompat keluar program = ALLOW, guard 100000 step.
+- `NL_IOCTL_PROGRAM` (0x8900203C): `nl_vm_set(prog)`; `count=0` kembali ke tabel EX/lama.
+- Program aktif => SEMUA tabel bypass; ret = `ACTION | (Param<<8)`; BLOCK/DELAY/DROP_PCT/RATE
+  semua aksi netem tersedia dari VM; hit program masuk `NlRuleHits[0]` (slot 0 dipinjam VM),
+  DROP_PCT/RATE pinjam slot netem 15.
+- **NlGate ikut VM** (bug ketemu pas first-run): gate = mask Enabled program saat VM aktif;
+  tanpa itu gate=0 saat tabel kosong dan evaluator tidak pernah dieksekusi (vmdbg=4 → 0 entry).
+- Hasil guest: `vm` standalone 5/5 pass (block dmac+port 200/200 hit, delay 300 ms
+  pending 10 → fired 10 antrean kering) + `full` 58/58 pass (stage vm M4 masuk suka 9/11).
 
 ### M5 Mirror + redirect + shim compat
 - MIRROR: salin frame ke adapter lain/mon-mode (telaah pairing adapters); REDIRECT: kirim ulang ke NEIGHBOR adapter.
@@ -44,5 +51,5 @@
 
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.
-- Semua ioctl METHOD_BUFFERED; codes: 0x89002000 + (fn-0x800)<<2; INJECT_RX=0x8900202C (0x80b), RULEHITS=0x89002030 (0x80c); next free = 0x89002034 ke atas (0x80d).
+- Semua ioctl METHOD_BUFFERED; codes: 0x89002000 + (fn-0x800)<<2; INJECT_RX=0x8900202C (0x80b), RULEHITS=0x89002030 (0x80c), POLICY_EX=0x89002034 (0x80d), DELAYSTAT=0x89002038 (0x80e), PROGRAM=0x8900203C (0x80f); next free = 0x89002040 ke atas (0x810).
 - Struct ring entry 1524 B tidak diubah (kunci ABI shm).

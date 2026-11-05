@@ -246,6 +246,18 @@ NL_API int nl_delay_stat(nl_delay_stat_t* out)
     return nl_ioctl(NL_IOC_DELAYSTAT, NULL, 0, out, (DWORD)sizeof(*out), NULL);
 }
 
+NL_API int nl_vm_set(const nl_vm_prog_t* prog)
+{
+    static_assert(sizeof(nl_vm_insn_t) == 8, "layout nl_vm_insn harus 8");
+    static_assert(sizeof(nl_vm_prog_t) == 520, "layout nl_vm_prog harus 520");
+    if (prog == NULL) { return ERROR_INVALID_PARAMETER; }
+    if (prog->count > NL_VM_MAX_INSNS) { return ERROR_INVALID_PARAMETER; }
+    nl_vm_prog_t p;
+    memset(&p, 0, sizeof(p));
+    memcpy(&p, prog, sizeof(p));
+    return nl_ioctl(NL_IOC_PROGRAM, &p, (DWORD)sizeof(p), NULL, 0, NULL);
+}
+
 NL_API int nl_inject_rx(const void* data, uint32_t len)
 {
     if (data == NULL || len == 0 || len > NL_FRAME_MAX) { return ERROR_INVALID_PARAMETER; }

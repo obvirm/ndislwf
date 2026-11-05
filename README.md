@@ -54,6 +54,7 @@ Semua METHOD_BUFFERED, access FILE_ANY_ACCESS, device 0x8900:
 0x89002030 RULEHITS     (out: NL_RULEHITS = hits[16] u64 per rule + block_tx + block_rx)
 0x89002034 POLICY_EX    (in: NL_POLICY_EX = 712 B; count=0 → kembali ke POLICY lama)
 0x89002038 DELAYSTAT    (out: NL_DELAY_STAT = pending + fired u64)
+0x8900203C PROGRAM      (in: NL_VM_PROG = 520 B; count=0 → kembali ke tabel EX/POLICY)
 ```
 
 ### Ring shared-memory (zero-copy)
@@ -107,3 +108,15 @@ max 4096 item, due maks 60 s) lalu mainkan ulang saat matang — TX
 dilewatkan apa adanya, RX di-indicate ulang; status antrean dibaca
 via `DELAYSTAT` (pending/fired). DROP_PCT pakai RNG per rule; RATE
 adalah token bucket per rule (burst = 1 s rate, refill QPC).
+
+### VM mini BPF klasik (v5)
+
+`PROGRAM` memasang program VM (`NL_VM_PROG`, maks 64 insn, register A/X,
+scratch M[16], bytecode kelas BPF klasik: LD/LDX/ST/STX/ALU/JMP/RET/MISC dgn
+size W/H/B, mode IMM/ABS/IND/MEM/LEN). Program aktif menggantikan SEMUA tabel
+(EX dan policy v3); `count=0` mengembalikan evalasi ke tabel. Ret insn =
+`ACTION | (Param << 8)` — jadi semua aksi netem (BLOCK/DELAY/DROP_PCT/RATE)
+bisa dibangun dari satu program; DELAY param = ms, DROP_PCT = %, RATE = kbps.
+Hit program tercatat di `NlRuleHits[0]` (slot 0); program match field apa pun
+via ABS/IND offset byte frame (MAC, IP header, port). `enabled` bitmask
+(NL_POLICY_EN_TX/RX) menentukan arah yang dievaluasi program.

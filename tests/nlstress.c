@@ -688,6 +688,103 @@ tNetem(void)
 }
 
 static int
+tVm(void)
+/*++  M4 vm: program BPF klasik (rule terkompilasi) lewat NL_IOC_PROGRAM.
+      Program1: BLOCK bila dmac[0..1]==0x0E0B (MAC_TST) ATAU dport==46005;
+      else ALLOW. Program2: DELAY 300 ms bila dport==46006; else ALLOW.
+      VM aktif menggantikan semua tabel; Count=0 mematikan. --*/
+{
+    nl_vm_prog_t    p;
+    nl_rule_hits_t  h0, h1;
+    nl_delay_stat_t d0, d1;
+    int ret, bad;
+
+    /* ---- program 1: blok via MAC rule + port rule ---- */
+    memset(&p, 0, sizeof p);
+    p.count   = 6;
+    p.enabled = NL_POLICY_EN_TX | NL_POLICY_EN_RX;
+    p.insns[0].code = NL_VM_CL_LD | NL_VM_SZ_H | NL_VM_MD_ABS;
+    p.insns[0].k    = 0;            /* A = mac[0..1] big-endian */
+    p.insns[1].code = NL_VM_CL_JMP | NL_VM_JEQ;
+    p.insns[1].jt   = 3; p.insns[1].jf = 0;
+    p.insns[1].k    = 0x0E0B;       /* == 0E:0B:.. (MAC_TST) → [5] BLOCK */
+    p.insns[2].code = NL_VM_CL_LD | NL_VM_SZ_H | NL_VM_MD_ABS;
+    p.insns[2].k    = 36;           /* A = dport UDP */
+    p.insns[3].code = NL_VM_CL_JMP | NL_VM_JEQ;
+    p.insns[3].jt   = 1; p.insns[3].jf = 0;
+    p.insns[3].k    = 46005;        /* == 46005 → [5] BLOCK */
+    p.insns[4].code = NL_VM_CL_RET | NL_VM_RTK;
+    p.insns[4].k    = NL_ACTION_ALLOW;
+    p.insns[5].code = NL_VM_CL_RET | NL_VM_RTK;
+    p.insns[5].k    = NL_ACTION_BLOCK;
+
+    ret = nl_vm_set(&p);
+    printf("      vm: nl_vm_set ret=%d\n", ret);
+    CHECK("vm: set program1", ret == 0);
+    Sleep(50);
+
+    memset(&h0, 0, sizeof h0);
+    (void)nl_rule_hits(&h0);
+    bad  = injectN(100, NL_PROTO_UDP, 12345, MAC_TST);   /* mac rule → block */
+    bad += injectN(100, NL_PROTO_UDP, 46005, MAC_BC);    /* port rule → block */
+    bad += injectN(100, NL_PROTO_UDP, 54321, MAC_BC);    /* tidak match → pass */
+    Sleep(200);
+    p.count = 0;
+    (void)nl_vm_set(&p);
+    memset(&h1, 0, sizeof h1);
+    (void)nl_rule_hits(&h1);
+    {
+        uint64_t hv = h1.hits[0] - h0.hits[0];
+        uint64_t bx = h1.block_tx - h0.block_tx;
+        printf("      vm A: hit=%llu blockTx=%llu bad=%d\n",
+               (unsigned long long)hv, (unsigned long long)bx, bad);
+        CHECK("vm A: block dmac/port", ret == 0 && bad == 0 && hv == 200 && bx == 200);
+    }
+
+    /* ---- program 2: DELAY 300ms pada dport 46006 ---- */
+    memset(&p, 0, sizeof p);
+    p.count   = 4;
+    p.enabled = NL_POLICY_EN_TX;
+    p.insns[0].code = NL_VM_CL_LD | NL_VM_SZ_H | NL_VM_MD_ABS;
+    p.insns[0].k    = 36;           /* A = dport */
+    p.insns[1].code = NL_VM_CL_JMP | NL_VM_JEQ;
+    p.insns[1].jt   = 1; p.insns[1].jf = 0;
+    p.insns[1].k    = 46006;        /* == 46006 → [3] DELAY */
+    p.insns[2].code = NL_VM_CL_RET | NL_VM_RTK;
+    p.insns[2].k    = NL_ACTION_ALLOW;
+    p.insns[3].code = NL_VM_CL_RET | NL_VM_RTK;
+    p.insns[3].k    = NL_ACTION_DELAY | (300u << 8);
+
+    memset(&d0, 0, sizeof d0);
+    (void)nl_delay_stat(&d0);
+    ret = nl_vm_set(&p);
+    printf("      vm: nl_vm_set (delay) ret=%d\n", ret);
+    CHECK("vm: set program2", ret == 0);
+    injectN(10, NL_PROTO_UDP, 46006, MAC_BC);
+    Sleep(80);
+    (void)nl_delay_stat(&d1);
+    p.count = 0;
+    (void)nl_vm_set(&p);
+    printf("      vm B: antrean delay300: pending=%llu (harap >=10)\n",
+           (unsigned long long)d1.pending);
+    CHECK("vm B: delay masuk antrean", d1.pending >= 10);
+    Sleep(400);   /* due 300 ms lewat */
+    memset(&d1, 0, sizeof d1);
+    (void)nl_delay_stat(&d1);
+    printf("      vm B matang: pending=%llu fired-delta=%llu (harap 0, >=10)\n",
+           (unsigned long long)d1.pending,
+           (unsigned long long)(d1.fired - d0.fired));
+    CHECK("vm B: matang terhitung", d1.pending == 0 && (d1.fired - d0.fired) >= 10);
+
+    {
+        nl_policy_t q;
+        memset(&q, 0, sizeof q);
+        (void)nl_policy_set(&q);   /* pastikan tabel lama mati */
+    }
+    return 1;
+}
+
+static int
 tBench(int seconds)
 /*++  M2 batch drain async. Dua fase, masing-masing `seconds` detik, 4 thread
      socket memompa frame stack TX nyata (nl_inject bypass capture):
@@ -1026,30 +1123,32 @@ static int
 tFull(void)
 {
     int rc;
-    printf("=== (1/10) version & enum ===\n");
+    printf("=== (1/11) version & enum ===\n");
     if (!tVersion()) { printf("GAGAL early\n"); return 3; }
     (void)tEnum();
     (void)tStats();
-    printf("=== (2/10) capture 3s ===\n");
+    printf("=== (2/11) capture 3s ===\n");
     (void)tCapture(3);
-    printf("=== (3/10) inject 4000 ===\n");
+    printf("=== (3/11) inject 4000 ===\n");
     (void)tInject(4000);
-    printf("=== (4/10) policy blok TX ===\n");
+    printf("=== (4/11) policy blok TX ===\n");
     (void)tPolicy();
     (void)tPolicy2();
-    printf("=== (5/10) inject RX ===\n");
+    printf("=== (5/11) inject RX ===\n");
     (void)tInjectRx();
-    printf("=== (6/10) hit per rule ===\n");
+    printf("=== (6/11) hit per rule ===\n");
     (void)tRuleHits();
-    printf("=== (7/10) policy blok RX ===\n");
+    printf("=== (7/11) policy blok RX ===\n");
     (void)tPolicyRx();
-    printf("=== (8/10) netem (M3) ===\n");
+    printf("=== (8/11) netem (M3) ===\n");
     (void)tNetem();
-    printf("=== (9/10) shm event 3s ===\n");
+    printf("=== (9/11) vm (M4) ===\n");
+    (void)tVm();
+    printf("=== (10/11) shm event 3s ===\n");
     (void)tShm(3);
-    printf("=== (10/10) bench drain 2+2s ===\n");
+    printf("=== (11/11) bench drain 2+2s ===\n");
     (void)tBench(2);
-    printf("=== (x/10) chaos 20s ===\n");
+    printf("=== (x/11) chaos 20s ===\n");
     (void)tChaos(20);
     printf("=== RINGKASAN: pass=%d fail=%d ===\n", g_pass, g_fail);
     rc = (g_fail == 0) ? 0 : 2;
@@ -1080,6 +1179,7 @@ main(int argc, char **argv)
     else if (!strcmp(cmd, "hits"))    r = tRuleHits()  ? 0 : 7;
     else if (!strcmp(cmd, "policyrx"))r = tPolicyRx()  ? 0 : 8;
     else if (!strcmp(cmd, "netem"))   r = tNetem()     ? 0 : 10;
+    else if (!strcmp(cmd, "vm"))      r = tVm()        ? 0 : 11;
     else if (!strcmp(cmd, "shm"))     r = tShm(atoi(argv[2]));
     else if (!strcmp(cmd, "bench"))   r = tBench(atoi(argv[2]));
     else if (!strcmp(cmd, "chaos"))   r = tChaos(atoi(argv[2]));
