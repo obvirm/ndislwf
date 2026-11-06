@@ -163,3 +163,21 @@ Pasangan disimpan per-instance (`NlMirrorTx/NlMirrorRx`), target di-refer
 (`NlMirrorDetach`). `flags=0` atau `DstIndex==SrcIndex` mematikan pasangan.
 `INJECT_TO` mengirim frame ke adapter tertentu (redirect — instance target
 di-refer selama send).
+
+### Hardening (v6/M6)
+
+- **Debug ioctl** `0x89002050` (`NL_IOCTL_DEBUG`, nlbridge `nl_debug_state()`):
+  snapshot state evaluasi — `FlowGen` (u64) + flag/jumlah tabel aktif
+  (`policy en/cnt`, `ex en/cnt`, `vm a/en/cnt`), jumlah pasangan mirror, panjang
+  antrean inject/delay. nlstress menampilkan `[dbg]` saat pengujian policy.
+- **Fuzz ioctl**: `nl_ioctl_raw()` (nlbridge, gateway DeviceIoControl mentah
+  tanpa validasi) + mode `fuzz <detik>` nlstress — 3 thread (`fzRaw` raw ioctl
+  garbage-but-typed, `fzVal` state valid acak, `fzSend` beban UDP 2 soket);
+  bisect `fuzzraw/fuzz3/fuzz5/fuzzval`, `nl_reset_all()` di cleanup.
+- **Driver Verifier** (standard + NDIS/WIFI, flag `0x2209bb`) pada
+  `ndislwf.sys`: menangkap 2 bug nyata — 0xC4/0x62 leak-on-unload
+  (`NlInjectComplete` tidak membebaskan NBL; Arg4 8182/2950 alokasi) dan
+  `NlIdx` = 0xFFFFFFFF saat attach pertama (counter init -1; kini NlIdx =
+  ordinal list). Pasca fix: tFull **66/66 PASS** + chaos 10 menit BSOD-0 PASS
+  + uninstall/reinstall bersih. Parser minidump x64 ringan:
+  `tests/parsesmall.mdmp.ps1` (BugCheckCode @0x38, P1..P4 @0x40-0x58).
