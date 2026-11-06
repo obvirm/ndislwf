@@ -18,6 +18,15 @@
  *   nlctl send <dump> [rx|to <idx>]   replay dump; arah mengikuti rekaman
  *   nlctl mirror <src> <dst> <dir>    pasang/cabut mirror antar adapter
  *   nlctl pcap <dump>                 konversi dump ke pcap (Wireshark)
+ *   nlctl vm <off|file>               pasang program VM mini-BPF dari teks
+ *
+ * Format program VM: satu insn per baris; '#' = komentar; label ":nama"
+ * atau "nama:".
+ * ldxw/ldxh/ldxb/ldw/ldh/ldb + abs/ind/imm/len/mem; st/stx <n>; tax/txa;
+ * alu <op> <k|x>; jmp eq|gt|ge|set <k|x> <tgt1> <tgt2> (tgt = nomor insn
+ * absolut atau label, hanya maju; tgt1=true tgt2=false); ret
+ * a|allow|block|delay <ms>|drop <pct>|rate <kbps>; enabled tx|rx|txrx.
+ * Program menimpa SEMUA tabel (EX/POLICY); ldxb abs k = X = byte frame[k].
  *
  * Form rule: <dir> = tx|rx|txrx; [proto] = any|tcp|udp;
  * [ip[/p]] = a.b.c.d[/prefix] (maksudnya dst; prefix bawaan /32);
@@ -200,7 +209,17 @@ static int usage(void)
         "  cap <idx> <tx|rx|txrx> <out.bin> [detik=5]\n"
         "  send <dump.bin> [rx | to <idx>]\n"
         "  mirror <src> <dst> <tx|rx|txrx|off>\n"
-        "  pcap <dump.bin>              konversi dump ke pcap Wireshark\n");
+        "  pcap <dump.bin>              konversi dump ke pcap Wireshark\n"
+        "  vm <off|fmt>                 matikan/pasang program VM (mini-BPF)\n"
+        "    fmt: satu insn per baris (# komentar; label \":nama\")\n"
+        "    enabled tx|rx|txrx              arah evaluasi (default txrx)\n"
+        "    ldw|ldb|ldxw|ldxh|ldxb abs|ind|imm <k>   abs: Data[k]; ind: Data[X+k]\n"
+        "    ldw len | ldw mem <n>           A = Len | M[n]\n"
+        "    st <n> | stx <n>                M[n] = A | X      tax | txa\n"
+        "    alu add|sub|mul|div|or|and|lsh|rsh|neg <k|x>\n"
+        "    jmp eq|gt|ge|set <k|x> <tgt1> <tgt2> | jmp a <tgt>\n"
+        "         tgt   = nomor insn absolut (mulai 0) atau label; maju saja\n"
+        "    ret a|allow|block|delay <ms>|drop <pct>|rate <kbps>\n");
     return NLCTL_USAGE;
 }
 
@@ -770,6 +789,315 @@ static int cmd_pcap(int argc, char **argv)
     return NLCTL_OK;
 }
 
+#define VM_LBL_MAX  16
+#define VM_LBL_SZ   32
+
+typedef struct _vm_label {
+    char    name[VM_LBL_SZ];
+    int     idx;
+} vm_label_t;
+
+static int       vm_lbn = 0;
+static vm_label_t g_lbl[VM_LBL_MAX];
+
+static int vm_lbl_find(const char *nm)
+/* pass 2: tabel label sudah penuh */
+{
+    int i;
+
+    for (i = 0; i < vm_lbn; i++)
+        if (_stricmp(g_lbl[i].name, nm) == 0) return g_lbl[i].idx;
+    return -1;
+}
+
+static char *vm_label_name(char *tok)
+/* label ":nama" atau "nama:"; NULL bila bukan label */
+{
+    size_t n = strlen(tok);
+
+    if (n < 2) return NULL;
+    if (tok[0] == ':') return tok + 1;
+    if (tok[n - 1] == ':') { tok[n - 1] = 0; return tok; }
+    return NULL;
+}
+
+static uint16_t vm_aluop(const char *s)
+{
+    if (_stricmp(s, "add") == 0) return NL_VM_OP_ADD;
+    if (_stricmp(s, "sub") == 0) return NL_VM_OP_SUB;
+    if (_stricmp(s, "mul") == 0) return NL_VM_OP_MUL;
+    if (_stricmp(s, "div") == 0) return NL_VM_OP_DIV;
+    if (_stricmp(s, "or")  == 0) return NL_VM_OP_OR;
+    if (_stricmp(s, "and") == 0) return NL_VM_OP_AND;
+    if (_stricmp(s, "lsh") == 0) return NL_VM_OP_LSH;
+    if (_stricmp(s, "rsh") == 0) return NL_VM_OP_RSH;
+    if (_stricmp(s, "neg") == 0) return NL_VM_OP_NEG;
+    return 0xFFFF;
+}
+
+static uint16_t vm_jmpop(const char *s)
+{
+    if (_stricmp(s, "a")   == 0) return NL_VM_JA;
+    if (_stricmp(s, "eq")  == 0) return NL_VM_JEQ;
+    if (_stricmp(s, "gt")  == 0) return NL_VM_JGT;
+    if (_stricmp(s, "ge")  == 0) return NL_VM_JGE;
+    if (_stricmp(s, "set") == 0) return NL_VM_JSET;
+    return 0xFFFF;
+}
+
+static uint16_t vm_mnemonic(const char *s, int *isx)
+{
+    static const struct { const char *nm; uint16_t cl; } w[6] = {
+        { "ldw",  NL_VM_CL_LD  }, { "ldh",  NL_VM_CL_LD | NL_VM_SZ_H },
+        { "ldb",  NL_VM_CL_LD | NL_VM_SZ_B },
+        { "ldxw", NL_VM_CL_LDX }, { "ldxh", NL_VM_CL_LDX | NL_VM_SZ_H },
+        { "ldxb", NL_VM_CL_LDX | NL_VM_SZ_B },
+    };
+    int i;
+
+    *isx = 0;
+    for (i = 0; i < 6; i++) {
+        if (_stricmp(s, w[i].nm) == 0) {
+            *isx = (w[i].cl & NL_VM_CL_LDX) ? 1 : 0;
+            return w[i].cl;
+        }
+    }
+    return 0xFFFF;
+}
+
+static int vm_num(const char *s, uint32_t *k)
+{
+    char *end;
+
+    *k = (uint32_t)strtoul(s, &end, 0);
+    if (end == s || (end != NULL && *end != 0)) return -1;
+    return 0;
+}
+
+static int vm_target(const char *s, int cur, uint8_t *out)
+/* nomor insn absolut (mulai 0) atau label; lompatan maju saja (jt/jf u8) */
+{
+    long rel;
+    int t;
+
+    if (s[0] >= '0' && s[0] <= '9') {
+        t = (int)strtoul(s, NULL, 0);
+        if (t < 0 || t > NL_VM_MAX_INSNS) return -1;
+    } else {
+        t = vm_lbl_find(s);
+        if (t < 0) return -1;
+    }
+    rel = (long)t - (cur + 1);
+    if (rel < 0 || rel > 255) return -1;
+    *out = (uint8_t)rel;
+    return 0;
+}
+
+static int cmd_vmasm(int argc, char **argv)
+{
+    nl_vm_prog_t p;
+    nl_vm_insn_t ins[NL_VM_MAX_INSNS];
+    FILE *f;
+    char line[512];
+    int nline = 0;
+    int cnt = 0;
+    uint32_t en = NL_POLICY_EN_TX | NL_POLICY_EN_RX;
+    int badflag = 0;
+    int i, r;
+
+    if (argc != 3) return usage();
+    if (_stricmp(argv[2], "off") == 0) {
+        memset(&p, 0, sizeof(p));
+        r = nl_vm_set(&p);
+        if (r != 0) return die_nl("nl_vm_set(off)", r);
+        printf("  vm: nonaktif (kembali ke tabel EX)\n");
+        return NLCTL_OK;
+    }
+
+    f = fopen(argv[2], "r");
+    if (f == NULL) {
+        fprintf(stderr, "vm: tidak bisa buka %s last=%lu\n", argv[2],
+                (unsigned long)GetLastError());
+        return NLCTL_ERR;
+    }
+
+    /* pass 1: urut insn + semua label (untuk lompatan maju tak berurut) */
+    vm_lbn = 0;
+    cnt = 0;
+    while (fgets(line, sizeof(line), f) != NULL) {
+        char *cut, *t;
+        char *tok[16];
+        char *lbln;
+        int ntok = 0;
+
+        nline++;
+        if ((cut = strchr(line, '#')) != NULL) *cut = 0;
+        while ((cut = strpbrk(line, "\r\n")) != NULL) *cut = 0;
+        t = strtok(line, " \t");
+        while (t != NULL && ntok < 16) { tok[ntok++] = t; t = strtok(NULL, " \t"); }
+        if (ntok == 0) continue;
+        if ((lbln = vm_label_name(tok[0])) != NULL) {
+            if (strlen(lbln) >= VM_LBL_SZ || vm_lbn >= VM_LBL_MAX) {
+                fclose(f);
+                fprintf(stderr, "vm: baris %d: label terlalu banyak/panjang\n", nline);
+                return NLCTL_ERR;
+            }
+            strcpy(g_lbl[vm_lbn].name, lbln);
+            g_lbl[vm_lbn].idx = cnt;
+            vm_lbn++;
+            continue;
+        }
+        if (_stricmp(tok[0], "enabled") == 0) continue;
+        cnt++;
+        if (cnt > NL_VM_MAX_INSNS) {
+            fclose(f);
+            fprintf(stderr, "vm: program lebih dari %u insn\n", (unsigned)NL_VM_MAX_INSNS);
+            return NLCTL_ERR;
+        }
+    }
+    if (cnt == 0) {
+        fclose(f);
+        fprintf(stderr, "vm: tak ada insn di %s\n", argv[2]);
+        return NLCTL_ERR;
+    }
+
+    /* pass 2: rakit dgn seluruh label sudah diketahui */
+    rewind(f);
+    nline = 0;
+    cnt = 0;
+    while (fgets(line, sizeof(line), f) != NULL && badflag == 0) {
+        char *cut, *t;
+        char *tok[16];
+        int ntok = 0;
+
+        nline++;
+        if ((cut = strchr(line, '#')) != NULL) *cut = 0;
+        while ((cut = strpbrk(line, "\r\n")) != NULL) *cut = 0;
+        t = strtok(line, " \t");
+        while (t != NULL && ntok < 16) { tok[ntok++] = t; t = strtok(NULL, " \t"); }
+        if (ntok == 0) continue;
+        if (vm_label_name(tok[0]) != NULL) continue;
+        if (_stricmp(tok[0], "enabled") == 0) {
+            if (ntok != 2 || parse_dir(tok[1], &en) != 0) {
+                fprintf(stderr, "vm: baris %d: arah tak sah\n", nline);
+                badflag = 1;
+            }
+            continue;
+        }
+        {
+            nl_vm_insn_t in;
+            uint16_t code = 0;
+            uint32_t k = 0;
+
+            memset(&in, 0, sizeof(in));
+            if (_stricmp(tok[0], "tax") == 0) {
+                if (ntok != 1) goto vbad;
+                code = NL_VM_CL_MISC | NL_VM_TAX;
+            } else if (_stricmp(tok[0], "txa") == 0) {
+                if (ntok != 1) goto vbad;
+                code = NL_VM_CL_MISC | NL_VM_TXA;
+            } else if (_stricmp(tok[0], "st") == 0 || _stricmp(tok[0], "stx") == 0) {
+                if (ntok != 2 || vm_num(tok[1], &k) != 0 || k >= NL_VM_SCRATCH) goto vbad;
+                code = (_stricmp(tok[0], "st") == 0 ? NL_VM_CL_ST : NL_VM_CL_STX)
+                       | NL_VM_MD_MEM;
+            } else if (_stricmp(tok[0], "alu") == 0) {
+                uint16_t op;
+                if (ntok < 3) goto vbad;
+                op = vm_aluop(tok[1]);
+                if (op == 0xFFFF) goto vbad;
+                if (_stricmp(tok[2], "x") == 0) code = NL_VM_CL_ALU | op | NL_VM_SRC_X;
+                else if (op == NL_VM_OP_NEG) goto vbad;
+                else {
+                    if (vm_num(tok[2], &k) != 0) goto vbad;
+                    code = NL_VM_CL_ALU | op;
+                }
+            } else if (_stricmp(tok[0], "jmp") == 0) {
+                uint16_t op;
+                if (ntok < 3) goto vbad;
+                op = vm_jmpop(tok[1]);
+                if (op == 0xFFFF) goto vbad;
+                if (op == NL_VM_JA) {
+                    if (ntok != 3 || vm_target(tok[2], cnt, &in.jt) != 0) goto vbad;
+                } else {
+                    if (ntok != 5) goto vbad;
+                    if (_stricmp(tok[2], "x") == 0) op |= NL_VM_SRC_X;
+                    else { if (vm_num(tok[2], &k) != 0) goto vbad; }
+                    if (vm_target(tok[3], cnt, &in.jt) != 0 ||
+                        vm_target(tok[4], cnt, &in.jf) != 0) goto vbad;
+                }
+                code = NL_VM_CL_JMP | op;
+            } else if (_stricmp(tok[0], "ret") == 0) {
+                if (ntok < 2) goto vbad;
+                if (_stricmp(tok[1], "a") == 0) {
+                    code = NL_VM_CL_RET | NL_VM_RTA;
+                } else if (_stricmp(tok[1], "allow") == 0) {
+                    code = NL_VM_CL_RET | NL_VM_RTK; k = NL_ACTION_ALLOW;
+                } else if (_stricmp(tok[1], "block") == 0) {
+                    code = NL_VM_CL_RET | NL_VM_RTK; k = NL_ACTION_BLOCK;
+                } else if (ntok == 3) {
+                    long long v = atoll(tok[2]);
+                    if (_stricmp(tok[1], "delay") == 0) {
+                        if (v <= 0 || v > NL_DELAY_MAX_MS) goto vbad;
+                    } else if (_stricmp(tok[1], "drop") == 0) {
+                        if (v < 0 || v > 100) goto vbad;
+                    } else if (_stricmp(tok[1], "rate") == 0) {
+                        if (v <= 0) goto vbad;
+                    } else goto vbad;
+                    code = NL_VM_CL_RET | NL_VM_RTK;
+                    k = (_stricmp(tok[1], "delay") == 0 ? NL_ACTION_DELAY :
+                         _stricmp(tok[1], "drop") == 0 ? NL_ACTION_DROP_PCT : NL_ACTION_RATE)
+                        | ((uint32_t)v << 8);
+                } else goto vbad;
+            } else {
+                uint16_t cl, md;
+                int isx = 0;
+
+                cl = vm_mnemonic(tok[0], &isx);
+                if (cl == 0xFFFF || ntok < 2) goto vbad;
+                if (_stricmp(tok[1], "len") == 0) {
+                    if (isx || ntok != 2) goto vbad;
+                    md = NL_VM_MD_LEN;
+                } else if (_stricmp(tok[1], "mem") == 0) {
+                    if (isx || ntok != 3) goto vbad;
+                    if (vm_num(tok[2], &k) != 0 || k >= NL_VM_SCRATCH) goto vbad;
+                    md = NL_VM_MD_MEM;
+                } else {
+                    if (ntok != 3) goto vbad;
+                    if (_stricmp(tok[1], "abs") == 0) md = NL_VM_MD_ABS;
+                    else if (_stricmp(tok[1], "ind") == 0) md = NL_VM_MD_IND;
+                    else if (_stricmp(tok[1], "imm") == 0) md = NL_VM_MD_IMM;
+                    else goto vbad;
+                    if (vm_num(tok[2], &k) != 0) goto vbad;
+                }
+                code = cl | md;
+            }
+
+            in.code = code;
+            in.k = k;
+            ins[cnt] = in;
+            cnt++;
+            continue;
+vbad:
+            fprintf(stderr, "vm: baris %d: format tak sah\n", nline);
+            badflag = 1;
+        }
+    }
+    {
+        int fe = ferror(f);
+        fclose(f);
+        if (badflag || fe) return NLCTL_ERR;
+    }
+
+    memset(&p, 0, sizeof(p));
+    p.count = (uint32_t)cnt;
+    p.enabled = en;
+    for (i = 0; i < cnt; i++) p.insns[i] = ins[i];
+    r = nl_vm_set(&p);
+    if (r != 0) return die_nl("nl_vm_set", r);
+    printf("  vm: program %u insn (enabled=%s) di pasang\n", cnt, dirstr(en));
+    return NLCTL_OK;
+}
+
 static int cmd_clear(int argc, char **argv)
 {
     nl_policy_t pol;
@@ -848,6 +1176,7 @@ main(int argc, char **argv)
     else if (_stricmp(argv[1], "cap") == 0)     r = cmd_cap(argc, argv);
     else if (_stricmp(argv[1], "send") == 0)    r = cmd_send(argc, argv);
     else if (_stricmp(argv[1], "mirror") == 0)  r = cmd_mirror(argc, argv);
+    else if (_stricmp(argv[1], "vm") == 0)      r = cmd_vmasm(argc, argv);
     else r = usage();
     nl_close();
     return r;

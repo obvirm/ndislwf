@@ -66,6 +66,14 @@ RX → `INJECT_RX`); `rx` memaksa semuanya ke jalur TCP/IP, `to <idx>` ke
 adapter tertentu. `nlctl mirror <src> <dst> <tx|rx|txrx|off>` memasang/
 mematikan pasangan mirror overwrite. `nlctl pcap <dump.bin>` mengkonversi
 NCLC → pcap klasik (LE, Ethernet); tidak butuh driver — jalan di host.
+`nlctl vm <off|file>` memasang/mematikan program VM mini-BPF dari teks:
+satu insn per baris (`#` komentar, label `:nama` atau `nama:`),
+`ldw/ldh/ldb/ldxw/ldxh/ldxb` + `abs|ind|imm <k>`, `ldw len`, `ld*w mem <n>`,
+`st/stx <n>`, `tax/txa`, `alu add|sub|mul|div|or|and|lsh|rsh|neg <k|x>`,
+`jmp eq|gt|ge|set <k|x> <tgt_true> <tgt_false>` / `jmp a <tgt>` (tgt =
+nomor insn absolut atau label), `ret a|allow|block|delay <ms>|drop <pct>|
+rate <kbps>`, `enabled tx|rx|txrx`. Program aktif menimpa semua tabel
+(EX/POLICY); `vm off` kembali ke tabel EX. Contoh: `tests/guest/nlvm1.txt`.
 
 ### Shim ndisapi.dll (kompat legacy filter)
 

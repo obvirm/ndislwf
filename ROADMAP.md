@@ -104,6 +104,20 @@
   incl=orig=len) — hasil dapat dibaca semua tool pcap standar.`pcap` tidak
   butuh driver (bypass `nl_open`, konversi off-line jalan di host).
   Tervalidasi host: 3 rekaman 110/74/110 B, header snaplen=65535.
+- [x] `nlctl vm <off|file>` ✅ 2026-11-06: assembler teks untuk VM mini-BPF —
+  M4 jadi bisa diprogram hari-hari tanpa C. Satu insn per baris, `#` komentar,
+  label `:nama` atau `nama:` (dua pass, lompatan maju sah), `enabled
+  tx|rx|txrx` (default txrx); mnemonic `ldw/ldh/ldb/ldxw/ldxh/ldxb` ×
+  `abs <k>`/`ind <k>`/`imm <k>`), `ldw len`, `ldw|ldx mem <n>`, `st/stx <n>`,
+  `tax/txa`, `alu add|sub|mul|div|or|and|lsh|rsh|neg <k|x>`,
+  `jmp eq|gt|ge|set <k|x> <tgt>t <tgt>f>` / `jmp a <tgt>` (tgt = nomor insn
+  absolut mulai 0 atau label, maju saja, u8), dan `ret
+  a|allow|block|delay <ms>|drop <pct>|rate <kbps>` (ret RTK = aksi|param<<8,
+  semua aksi netem dari teks). `vm off` = count=0 kembali ke tabel.
+  Guest smoke di bawah Verifier: program blok ICMP TX (`ldb abs 34; jmp eq 8;
+  ret block/allow`) → ping 1.1.1.1 **100% loss** saat aktif (kernel
+  `vm(a=1 en=1 cnt=4)`), `vm off` → ping pulih 2/2; file mnemonic tak dikenal
+  exit 1 dgn nomor baris; `vm off` bersih (`vm a=0 en=0 cnt=0`).
 
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.
