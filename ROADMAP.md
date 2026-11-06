@@ -104,6 +104,19 @@
   incl=orig=len) — hasil dapat dibaca semua tool pcap standar.`pcap` tidak
   butuh driver (bypass `nl_open`, konversi off-line jalan di host).
   Tervalidasi host: 3 rekaman 110/74/110 B, header snaplen=65535.
+- [x] Mirror end-to-end di guest ✅ 2026-11-06 (R12/R13, drv `9ede9491`):
+  copy TX sumber masuk ring TX target dan counter per-adapter terbaca.
+  Tiga akar masalah lama ditambal: (1) bit arah SET_MODE bentrok dgn bit
+  policy — `mode X tx` (parse lama) kirim bit policy TX=0x1, di kernel itu
+  NL_MODE_RX → semua "capture TX" lama sesungguhnya capture RX (cap_tx
+  abadi 0); nlctl kini pisah parse_mode_dir (bit NL_MODE_*) bebas dr
+  parse_dir (bit policy). (2) `stats <idx>` & `cap <idx>` pakai NlIdx
+  stale, resolver ordinal `NlFilterByIdxLocked` dipakai device.c. (3)
+  driver guest ternyata build lama (hash beda) — redeploy + verify SHA256.
+  Bukti: `mirror 1 0 tx` + ping → ad1 TX 3 frame asli (74 B ICMP echo),
+  ring TX ad0 berisi 3 copy, `stats 0` cap_tx=3, `stats 1` cap_tx=3,
+  mirror off → bisu. R12 bungkuk: `cap 1 tx` (nlctl7 lama) = RX replies
+  (flags=0x2) — petunjuk awal biar akar masalah terbaca.
 - [x] `nlctl vm <off|file>` ✅ 2026-11-06: assembler teks untuk VM mini-BPF —
   M4 jadi bisa diprogram hari-hari tanpa C. Satu insn per baris, `#` komentar,
   label `:nama` atau `nama:` (dua pass, lompatan maju sah), `enabled
