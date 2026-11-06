@@ -396,6 +396,41 @@ NlDelayDrain(
 }
 
 VOID
+NlDelayFlush(
+    VOID
+    )
+/*++  Kosongkan antrean delay dari IOCTL CLEAR (PASSIVE): semua item dibuat
+     jatuh tempo lalu ditembakkan lewat rutin DPC yang sama (TX NBL dicomplete,
+     TX/RX data di-forward) supaya peserta tidak bocor; setelah kontan
+     counter stat delay dikembalikan ke 0. --*/
+{
+    KIRQL        OldIrql;
+    PLIST_ENTRY  Link;
+    PNL_DELAY_ITEM it;
+    ULONG        i;
+
+    KeCancelTimer(&NlDelayTimer);
+    KeAcquireSpinLock(&NlDelayLock, &OldIrql);
+    Link = NlDelayList.Flink;
+    while (Link != &NlDelayList)
+    {
+        it = CONTAINING_RECORD(Link, NL_DELAY_ITEM, Link);
+        Link = Link->Flink;
+        it->Due.QuadPart = 0;
+    }
+    NlDelayArmedValid = FALSE;
+    KeReleaseSpinLock(&NlDelayLock, OldIrql);
+
+    NlDelayDpcFn(NULL, NULL, NULL, NULL);
+
+    InterlockedExchange64(&NlDelayFired, 0);
+    for (i = 0; i < NL_POLICY_MAX_RULES; i++)
+    {
+        InterlockedExchange64(&NlDelayFiredRule[i], 0);
+    }
+}
+
+VOID
 NlDelayUnload(
     VOID
     )

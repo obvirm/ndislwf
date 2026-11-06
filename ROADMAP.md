@@ -140,6 +140,13 @@
   `inj` naik persis +6; bukan-pcap exit 1, argumen kurang exit 2.
 
 ### M8 Kualitas observability & operabilitas (mulai 2026-11-06)
+- [x] Reset counter delay via `clear` ✅ 2026-11-06: `nlctl clear` kini
+  memanggil `nl_clear()` (NL_IOCTL_CLEAR); kernel: `NlDelayFlush` --
+  semua item antrean dibuat jatuh tempo lalu ditembakkan lewat rutin DPC
+  sama (NBL TX dicomplete, inject TX/RX di-forward, tanpa bocor), counter
+  `fired`/`fired_rule` lalu di-nol-kan. Guest R15 (drv `d7519fee`):
+  sebelum `clear` `fired=3`, sesudah `pending=0 fired=0` tanpa nilai negatif.
+
 - [x] MAC adapter sejak attach ✅ 2026-11-06: `FilterRestart` kini query
   `OID_802_3_CURRENT_ADDRESS` via `filterDoInternalRequest` (sinkron,
   PASSIVE) dan mengisi `NlMac` sebelum Running — `enum`/`show` menampilkan

@@ -1248,7 +1248,9 @@ static int cmd_clear(int argc, char **argv)
     if (r != 0) return die_nl("nl_policy_ex_set", r);
     r = nl_policy_set(&pol);
     if (r != 0) return die_nl("nl_policy_set", r);
-    printf("  clear: EX/VM/POLICY kosong\n");
+    r = nl_clear();
+    if (r != 0) return die_nl("nl_clear", r);
+    printf("  clear: EX/VM/POLICY kosong, stats+delay nol\n");
     return NLCTL_OK;
 }
 

@@ -936,6 +936,8 @@ FilterDeviceIoControl(
             }
             FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
+            NlDelayFlush();
+
             Status = STATUS_SUCCESS;
             InfoLength = 0;
             break;

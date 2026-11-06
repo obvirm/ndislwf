@@ -66,6 +66,7 @@ struct _MS_FILTER *NlFilterByIdxLocked(IN ULONG Idx);
 NDIS_STATUS NlInjectTo(ULONG DstIndex, PUCHAR Data, ULONG Len);
 VOID        NlDelayInit(VOID);
 VOID        NlDelayDrain(struct _MS_FILTER *pFilter);
+VOID        NlDelayFlush(VOID);
 VOID        NlDelayUnload(VOID);
 VOID        NlTxCapture(struct _MS_FILTER *pFilter, PUCHAR Data, ULONG Len);
 VOID        NlRxCapture(struct _MS_FILTER *pFilter, PUCHAR Data, ULONG Len);
