@@ -69,6 +69,8 @@ VOID        NlDelayUnload(VOID);
 VOID        NlTxCapture(struct _MS_FILTER *pFilter, PUCHAR Data, ULONG Len);
 VOID        NlRxCapture(struct _MS_FILTER *pFilter, PUCHAR Data, ULONG Len);
 VOID        NlPolicySet(const PNL_POLICY Src);
+/* v6/M6 (debug): snapshot state evaluasi */
+VOID        NlDebugDump(PNL_DEBUG Out);
 VOID        NlRingUninit(struct _MS_FILTER *pFilter);
 VOID        NlInjectInit(VOID);
 VOID        NlInjectUninit(VOID);

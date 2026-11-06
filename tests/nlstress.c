@@ -295,6 +295,23 @@ tInject(uint32_t n)
     return bad == 0 && (b.injected - a.injected) == n;
 }
 
+static void
+dbgPrint(const char *label)
+{
+    nl_debug_state_t d;
+    if (nl_debug_state(&d) == 0)
+    {
+        printf("      [dbg] %s: gen=%llu pol(en=%u cnt=%u) ex(en=%u cnt=%u) "
+               "vm(a=%u en=%u cnt=%u) mir=%u dly=%u\n",
+               label,
+               (unsigned long long)d.flow_gen,
+               d.policy_enabled, d.policy_count,
+               d.ex_enabled, d.ex_count,
+               d.vm_active, d.vm_en, d.vm_count,
+               d.mirror_pairs, d.inject_queue_len);
+    }
+}
+
 static int
 tPolicy(void)
 {
@@ -317,13 +334,17 @@ tPolicy(void)
     ret = nl_policy_set(&p);
     printf("      nl_policy_set (TX UDP dport 9999) ret=%d\n", ret);
     CHECK("policy: set ok", ret == 0);
+    dbgPrint("setelah set");
     Sleep(50);
+    dbgPrint("setelah sleep 50");
 
     ret = injectN(500, NL_PROTO_UDP, 9999, MAC_BC);   /* harus drop */
     ret += injectN(200, NL_PROTO_UDP, 5678, MAC_BC);  /* must not */
     ret += injectN(100, 0, 0, MAC_BC);                /* ARP must not */
     Sleep(100);
+    dbgPrint("setelah inject");
     (void)nl_stats(NULL, &b);
+    dbgPrint("setelah stats");
 
     p.enabled = 0;
     (void)nl_policy_set(&p);
@@ -1211,6 +1232,8 @@ chSend(void *arg)
     WSACleanup();
 }
 
+static void nl_reset_all(void);
+
 static int
 tChaos(int seconds)
 {
@@ -1241,48 +1264,212 @@ tChaos(int seconds)
            (unsigned long long)s.injected, (unsigned long long)s.dropped,
            s.active_units);
     CHECK("chaos: stats ok + inject>0", r == 0 && s.injected > 0);
-    {
-        nl_policy_t p;
-        memset(&p, 0, sizeof p);
-        (void)nl_policy_set(&p);
-        (void)nl_set_mode(g_adapter, 0);
-    }
+    nl_reset_all();
     return (r == 0 && s.injected > 0) ? 1 : 0;
+}
+
+/* ---------------- fuzz ioctl (M6) ---------------- */
+
+static volatile LONG g_fuzzStop = 0;
+
+static uint32_t
+fzCode(uint32_t fn)
+{
+    return 0x89000000u | (fn << 2);
+}
+
+static void
+fzRaw(void *arg)
+{
+    uint32_t seed = (uint32_t)(uintptr_t)arg;
+    uint32_t buf[1030];   /* lebih besar dari ioctl terbesar (1524 B) */
+    uint32_t obuf[520];
+    uint32_t k, c = 0;
+    while (!g_fuzzStop) {
+        uint32_t fn, code, inlen, outlen;
+        uint32_t *inb = buf;
+        fn = 0x800u + (smux(&seed) % 0x14u);
+        if (smux(&seed) & 4) fn = 0x840u + (smux(&seed) % 0x7C0u);
+        code = fzCode(fn);
+        inlen = (smux(&seed) & 1) ? (smux(&seed) % 3200u) : 0u;
+        for (k = 0; k < (inlen + 3) / 4; ++k) buf[k] = smux(&seed);
+        outlen = smux(&seed) % 2049u;
+        if (inlen == 0 && (smux(&seed) & 1)) inb = NULL;
+        (void)nl_ioctl_raw(code, inb, inlen, obuf, outlen, NULL);
+        ++c;
+    }
+    printf("      fuzz raw: %llu siklus\n", (unsigned long long)c);
+}
+
+static void
+fzVal(void *arg)
+{
+    uint32_t seed = (uint32_t)(uintptr_t)arg + 7;
+    nl_policy_ex_t ex;
+    nl_vm_prog_t vm;
+    uint8_t data[NL_FRAME_MAX];
+    uint32_t k, c = 0;
+    while (!g_fuzzStop) {
+        nl_mirror_cfg_t mir;
+        mir.src_index = smux(&seed) % 40u;
+        mir.dst_index = smux(&seed) % 40u;
+        mir.flags = smux(&seed) % 16u;
+        (void)nl_mirror_set(&mir);
+
+        memset(&vm, 0, sizeof vm);
+        vm.count = (smux(&seed) % 10u == 0) ? (smux(&seed) % 200u)
+                                            : (smux(&seed) % 64u);
+        vm.enabled = smux(&seed) & 3u;
+        for (k = 0; k < (uint32_t)vm.count; ++k) {
+            vm.insns[k].code = (uint16_t)smux(&seed);
+            vm.insns[k].jt   = (uint8_t)smux(&seed);
+            vm.insns[k].jf   = (uint8_t)smux(&seed);
+            vm.insns[k].k    = smux(&seed);
+        }
+        (void)nl_vm_set(&vm);
+
+        memset(&ex, 0, sizeof ex);
+        ex.count = smux(&seed) % 20u;
+        ex.enabled = smux(&seed) & 3u;
+        for (k = 0; k < (uint32_t)ex.count; ++k) {
+            ex.rules[k].r.proto = (uint8_t)smux(&seed);
+            ex.rules[k].r.match = smux(&seed) & 1u;
+            ex.rules[k].r.ip    = smux(&seed);
+            ex.rules[k].r.mask  = smux(&seed);
+            ex.rules[k].r.port_min = (uint16_t)smux(&seed);
+            ex.rules[k].r.port_max = (uint16_t)smux(&seed);
+            memset(ex.rules[k].r.dst_mac, (int)(smux(&seed) & 0xFF), 6);
+            ex.rules[k].action   = smux(&seed) % 8u;
+            ex.rules[k].delay_ms = smux(&seed) % 70000u;
+            ex.rules[k].drop_pct = smux(&seed) % 140u;
+            ex.rules[k].rate_kbps = smux(&seed) % 0x80000000u;
+        }
+        (void)nl_policy_ex_set(&ex);
+
+        (void)nl_inject(data, 0);
+        (void)nl_inject(data, NL_FRAME_MAX + 1);
+        (void)nl_inject_to(smux(&seed) % 40u, data, NL_FRAME_MAX);
+        (void)nl_inject_rx(data, smux(&seed) % (NL_FRAME_MAX + 1u));
+        ++c;
+    }
+    printf("      fuzz struct: %llu siklus\n", (unsigned long long)c);
+}
+
+static void
+fzSend(void *arg)
+{
+    WSADATA wsa;
+    SOCKET sd;
+    struct sockaddr_in sa;
+    DWORD br = 1;
+    const char pay[100] = "nlstress-fuzz-load";
+    ULONGLONG c = 0;
+    (void)arg;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
+    sd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sd == INVALID_SOCKET) { WSACleanup(); return; }
+    (void)setsockopt(sd, SOL_SOCKET, SO_BROADCAST, (char *)&br, sizeof br);
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(47401);
+    sa.sin_addr.s_addr = 0xFFFFFFFFu;
+    for (c = 0; !g_fuzzStop; ++c) {
+        (void)sendto(sd, pay, sizeof pay, 0, (SOCKADDR *)&sa, sizeof sa);
+        if ((c & 0x7F) == 0) Sleep(0);
+    }
+    closesocket(sd);
+    WSACleanup();
+    printf("      fuzz send: %llu paket\n", c);
+}
+
+static int
+tFuzzN(int seconds, int kind)
+{
+    uintptr_t t1 = 0, t2 = 0, t3 = 0;
+    nl_stats_t s;
+    int r = 9;
+
+    g_fuzzStop = 0;
+    if (kind & 1) t1 = _beginthread(fzRaw, 0, (void *)11);
+    if (kind & 2) t2 = _beginthread(fzVal, 0, (void *)12);
+    if (kind & 4) t3 = _beginthread(fzSend, 0, (void *)13);
+    Sleep(1000ull * seconds);
+    g_fuzzStop = 1;
+    Sleep(400);
+    (void)t1; (void)t2; (void)t3;
+
+    memset(&s, 0, sizeof s);
+    r = nl_stats(NULL, &s);
+    printf("      fuzz%d %d ms; stats ret=%d rx=%llu tx=%llu inj=%llu drop=%llu\n",
+           kind, seconds * 1000, r,
+           (unsigned long long)s.rx_total, (unsigned long long)s.tx_total,
+           (unsigned long long)s.injected, (unsigned long long)s.dropped);
+    CHECK("fuzz: driver tetap hidup (stats ok)", r == 0);
+    nl_reset_all();
+    return (r == 0) ? 1 : 0;
+}
+
+static int
+tFuzz(int seconds)
+{
+    return tFuzzN(seconds, 7);
+}
+
+static void
+nl_reset_all(void)
+{
+    nl_policy_t p;
+    nl_policy_ex_t ex;
+    nl_vm_prog_t vm;
+    nl_mirror_cfg_t mir;
+    memset(&p, 0, sizeof p);
+    memset(&ex, 0, sizeof ex);
+    memset(&vm, 0, sizeof vm);
+    memset(&mir, 0, sizeof mir);
+    (void)nl_vm_set(&vm);
+    (void)nl_policy_ex_set(&ex);
+    (void)nl_policy_set(&p);
+    (void)nl_mirror_set(&mir);
+    (void)nl_set_mode(g_adapter, 0);
+    (void)nl_clear();
 }
 
 static int
 tFull(void)
 {
     int rc;
-    printf("=== (1/12) version & enum ===\n");
+    printf("=== (1/13) version & enum ===\n");
     if (!tVersion()) { printf("GAGAL early\n"); return 3; }
+    nl_reset_all();
     (void)tEnum();
     (void)tStats();
-    printf("=== (2/12) capture 3s ===\n");
+    printf("=== (2/13) capture 3s ===\n");
     (void)tCapture(3);
-    printf("=== (3/12) inject 4000 ===\n");
+    printf("=== (3/13) inject 4000 ===\n");
     (void)tInject(4000);
-    printf("=== (4/12) policy blok TX ===\n");
+    printf("=== (4/13) policy blok TX ===\n");
     (void)tPolicy();
     (void)tPolicy2();
-    printf("=== (5/12) inject RX ===\n");
+    printf("=== (5/13) inject RX ===\n");
     (void)tInjectRx();
-    printf("=== (6/12) hit per rule ===\n");
+    printf("=== (6/13) hit per rule ===\n");
     (void)tRuleHits();
-    printf("=== (7/12) policy blok RX ===\n");
+    printf("=== (7/13) policy blok RX ===\n");
     (void)tPolicyRx();
-    printf("=== (8/12) netem (M3) ===\n");
+    printf("=== (8/13) netem (M3) ===\n");
     (void)tNetem();
-    printf("=== (9/12) vm (M4) ===\n");
+    printf("=== (9/13) vm (M4) ===\n");
     (void)tVm();
-    printf("=== (10/12) mirror (M5) ===\n");
+    printf("=== (10/13) mirror (M5) ===\n");
     (void)tMirror();
-    printf("=== (11/12) shm event 3s ===\n");
+    printf("=== (11/13) shm event 3s ===\n");
     (void)tShm(3);
-    printf("=== (12/12) bench drain 2+2s ===\n");
+    printf("=== (12/13) bench drain 2+2s ===\n");
     (void)tBench(2);
-    printf("=== (x/12) chaos 20s ===\n");
+    printf("=== (x/13) chaos 20s ===\n");
     (void)tChaos(20);
+    printf("=== (13/13) fuzz ioctl (M6) ===\n");
+    (void)tFuzz(8);
     printf("=== RINGKASAN: pass=%d fail=%d ===\n", g_pass, g_fail);
     rc = (g_fail == 0) ? 0 : 2;
     return rc;
@@ -1317,6 +1504,12 @@ main(int argc, char **argv)
     else if (!strcmp(cmd, "shm"))     r = tShm(atoi(argv[2]));
     else if (!strcmp(cmd, "bench"))   r = tBench(atoi(argv[2]));
     else if (!strcmp(cmd, "chaos"))   r = tChaos(atoi(argv[2]));
+    else if (!strcmp(cmd, "fuzz"))    r = tFuzz(atoi(argv[2])) ? 0 : 13;
+    else if (!strcmp(cmd, "fuzzraw")) r = tFuzzN(atoi(argv[2]), 1) ? 0 : 13;
+    else if (!strcmp(cmd, "fuzzval")) r = tFuzzN(atoi(argv[2]), 6) ? 0 : 13;
+    else if (!strcmp(cmd, "fuzz3"))   r = tFuzzN(atoi(argv[2]), 3) ? 0 : 13;
+    else if (!strcmp(cmd, "fuzz5"))   r = tFuzzN(atoi(argv[2]), 5) ? 0 : 13;
+    else if (!strcmp(cmd, "reset"))   { nl_reset_all(); r = 0; }
     else if (!strcmp(cmd, "full"))    r = tFull();
     else { printf("mode tidak dikenal: %s\n", cmd); r = 9; }
     nl_close();

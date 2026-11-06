@@ -616,6 +616,23 @@ FilterDeviceIoControl(
             break;
         }
 
+        case NL_IOCTL_DEBUG:
+        {
+            PNL_DEBUG pd = (PNL_DEBUG)Irp->AssociatedIrp.SystemBuffer;
+            ULONG OutLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+
+            if (Irp->AssociatedIrp.SystemBuffer == NULL ||
+                OutLen < sizeof(NL_DEBUG))
+            {
+                Status = STATUS_BUFFER_TOO_SMALL;
+                break;
+            }
+            NlDebugDump(pd);
+            InfoLength = sizeof(NL_DEBUG);
+            Status = STATUS_SUCCESS;
+            break;
+        }
+
         case NL_IOCTL_INJECT_RX:
         {
             PNL_INJECT pj = (PNL_INJECT)Irp->AssociatedIrp.SystemBuffer;

@@ -301,6 +301,29 @@ NL_API int nl_rule_hits(nl_rule_hits_t* out)
     return nl_ioctl(NL_IOC_RULEHITS, NULL, 0, out, (DWORD)sizeof(*out), NULL);
 }
 
+NL_API int nl_ioctl_raw(uint32_t code,
+                        void* in_buf, uint32_t in_len,
+                        void* out_buf, uint32_t out_len,
+                        uint32_t* out_ret_len)
+{
+    DWORD ret = 0;
+    int e = nl_ioctl((DWORD)code, in_buf, (DWORD)in_len,
+                     out_buf, (DWORD)out_len, &ret);
+    if (out_ret_len != NULL)
+    {
+        *out_ret_len = (uint32_t)ret;
+    }
+    return e;
+}
+
+NL_API int nl_debug_state(nl_debug_state_t* out)
+{
+    DWORD ret = 0;
+    if (out == NULL) { return ERROR_INVALID_PARAMETER; }
+    memset(out, 0, sizeof(*out));
+    return nl_ioctl(NL_IOC_DEBUG, NULL, 0, out, (DWORD)sizeof(*out), &ret);
+}
+
 NL_API void* nl_shm_alloc(void)
 {
     void* p = VirtualAlloc(NULL, (SIZE_T)NL_SHM_BYTES,

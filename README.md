@@ -86,6 +86,7 @@ Semua METHOD_BUFFERED, access FILE_ANY_ACCESS, device 0x8900:
 0x8900203C PROGRAM      (in: NL_VM_PROG = 520 B; count=0 → kembali ke tabel EX/POLICY)
 0x89002040 MIRROR       (in: NL_MIRROR_CFG = src+dst+flags; bit0 TX bit1 RX; 0 = matikan semua)
 0x89002044 INJECT_TO    (in: NL_INJECT_TO = dst+len+data[1514]; TX inject ke adapter tertentu)
+0x89002050 DEBUG        (out: NL_DEBUG = 48 B; snapshot state evaluasi: flow gen + flag tabel aktif)
 ```
 
 ### Ring shared-memory (zero-copy)

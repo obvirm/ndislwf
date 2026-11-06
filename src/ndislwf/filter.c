@@ -4958,3 +4958,62 @@ NlPolicySet(
     InterlockedIncrement64(&NlFlowGen);
     KeReleaseSpinLock(&NlFlowLock, OldIrql);
 }
+
+VOID
+NlDebugDump(
+    OUT PNL_DEBUG Out
+    )
+/*++  M6 debug: snapshot state evaluasi untuk observabilitas luar.
+     Policy/EX/VM/Gen di bawah NlFlowLock; mirror di bawah FilterListLock;
+     dual-lock dipisah (tidak disarangkan, keduanya dikumpulkan sendiri). --*/
+{
+    KIRQL OldIrql;
+    BOOLEAN bAtDispatchLvl = FALSE;
+    PLIST_ENTRY Link;
+    ULONG Pairs = 0;
+    NL_POLICY Snap;
+    ULONG Ex, VmA, VmE;
+    NL_POLICY_EX ExS;
+    NL_VM_PROG VmS;
+
+    if (Out == NULL)
+    {
+        return;
+    }
+    NdisZeroMemory(Out, sizeof(*Out));
+
+    KeAcquireSpinLock(&NlFlowLock, &OldIrql);
+    Snap = NlPolicy;
+    ExS = NlPolicyEx;
+    VmS = NlVm;
+    Ex = (ULONG)NlExEnabled;
+    VmA = (ULONG)NlVmActive;
+    VmE = (ULONG)NlVmEn;
+    Out->FlowGen = (ULONGLONG)NlFlowGen;
+    KeReleaseSpinLock(&NlFlowLock, OldIrql);
+
+    FILTER_ACQUIRE_LOCK(&FilterListLock, bAtDispatchLvl);
+    for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+    {
+        PMS_FILTER p = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+        if (p->NlMirrorTx != NULL)
+        {
+            ++Pairs;
+        }
+        if (p->NlMirrorRx != NULL && p->NlMirrorTx != p->NlMirrorRx)
+        {
+            ++Pairs;
+        }
+    }
+    FILTER_RELEASE_LOCK(&FilterListLock, bAtDispatchLvl);
+
+    Out->PolicyEnabled = Snap.Enabled;
+    Out->PolicyCount = Snap.Count;
+    Out->ExEnabled = Ex;
+    Out->ExCount = ExS.Count;
+    Out->VmActive = VmA;
+    Out->VmEn = VmE;
+    Out->VmCount = VmS.Count;
+    Out->MirrorPairs = Pairs;
+    Out->InjectQueueLen = (ULONG)NlDelayCount;
+}

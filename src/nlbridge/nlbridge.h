@@ -39,6 +39,7 @@ extern "C" {
 #define NL_IOC_PROGRAM    0x8900203Cu  /* fn 0x80f (v5/M4) */
 #define NL_IOC_MIRROR     0x89002040u  /* fn 0x810 (v6/M5) */
 #define NL_IOC_INJECT_TO  0x89002044u  /* fn 0x811 (v6/M5) */
+#define NL_IOC_DEBUG      0x89002050u  /* fn 0x814 (M6 debug) */
 
 #define NL_ABI_MAGIC      0x31504C4Eu  /* 'NLP1' */
 #define NL_ABI_VERSION    0x00010000u  /* v1.0 */
@@ -335,6 +336,29 @@ NL_API int  nl_inject_to(uint32_t dst_index, const void* data, uint32_t len);
 
 /* Suntik frame ke jalur RX (replay, v3). 0 = sukses. */
 NL_API int  nl_inject_rx(const void* data, uint32_t len);
+
+/* M6: ioctl mentah untuk fuzz/eksplorasi ABI - tanpa validasi app-side;
+ * buffer langsung diteruskan ke DeviceIoControl. 0 = sukses. */
+NL_API int  nl_ioctl_raw(uint32_t code,
+                         void* in_buf, uint32_t in_len,
+                         void* out_buf, uint32_t out_len,
+                         uint32_t* out_ret_len);
+
+/* M6 (debug): snapshot state evaluasi kernel (tabel aktif + generasi). */
+typedef struct nl_debug_state {
+    uint64_t flow_gen;
+    uint32_t policy_enabled;
+    uint32_t policy_count;
+    uint32_t ex_enabled;
+    uint32_t ex_count;
+    uint32_t vm_active;
+    uint32_t vm_en;
+    uint32_t vm_count;
+    uint32_t mirror_pairs;
+    uint32_t inject_queue_len;
+} nl_debug_state_t;             /* 44 + pad = 48 B */
+
+NL_API int  nl_debug_state(nl_debug_state_t* out);
 
 /* Hit per rule + counter block per arah (v3). 0 = sukses. */
 NL_API int  nl_rule_hits(nl_rule_hits_t* out);

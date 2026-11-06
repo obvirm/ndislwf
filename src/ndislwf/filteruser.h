@@ -120,6 +120,9 @@ typedef struct _FILTER_WRITE_CONFIG
 #define NL_IOCTL_MIRROR     NL_CODE(0x810)
 #define NL_IOCTL_INJECT_TO  NL_CODE(0x811)
 
+/* v6/M6 (debug): dump state evaluasi (flag tabel aktif + generasi) */
+#define NL_IOCTL_DEBUG      NL_CODE(0x814)
+
 #define NL_ABI_MAGIC   0x31504C4Eu   /* 'NLP1' */
 #define NL_ABI_VERSION ((1UL << 16) | 0UL)
 
@@ -390,6 +393,20 @@ typedef struct _NL_INJECT_TO {
     ULONG       Len;                    /* frame 1..NL_FRAME_MAX */
     UCHAR       Data[NL_FRAME_MAX];
 } NL_INJECT_TO, *PNL_INJECT_TO;
+
+/* v6/M6 debug: state evaluasi snapshot (semua u32; FlowGen u64) */
+typedef struct _NL_DEBUG {
+    ULONGLONG   FlowGen;        /* generasi flow cache berjalan */
+    ULONG       PolicyEnabled;  /* NlPolicy.Enabled */
+    ULONG       PolicyCount;    /* NlPolicy.Count */
+    ULONG       ExEnabled;      /* NlExEnabled */
+    ULONG       ExCount;        /* NlPolicyEx.Count */
+    ULONG       VmActive;       /* NlVmActive */
+    ULONG       VmEn;           /* NlVmEn */
+    ULONG       VmCount;        /* NlVm.Count */
+    ULONG       MirrorPairs;    /* pasangan mirror aktif (Tx+Rx set) */
+    ULONG       InjectQueueLen; /* pending antrean delay */
+} NL_DEBUG, *PNL_DEBUG;
 
 #endif //__FILTERUSER_H__
 
