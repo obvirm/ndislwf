@@ -63,8 +63,13 @@ dump biner (magic `NCLC`, header 16 B + rekaman 1524 B fixed per frame) dan
 kembali menonaktifkan mode. `nlctl send <dump.bin> [rx | to <idx>]`
 mereplay dump: arah tiap frame mengikuti flag rekaman (TX → `INJECT_TO`,
 RX → `INJECT_RX`); `rx` memaksa semuanya ke jalur TCP/IP, `to <idx>` ke
-adapter tertentu. `nlctl mirror <src> <dst> <tx|rx|txrx|off>` memasang/
-mematikan pasangan mirror overwrite. `nlctl pcap <dump.bin>` mengkonversi
+adapter tertentu. `nlctl mirror <src> <dst> <tx|rx|txrx|off>` memasang/mematikan pasangan
+mirror: copy tiap frame capture adapter sumber masuk ring adapter target
+(sama arah) — terbukti end-to-end guest `mirror 1 0 tx` + ping → 3 frame
+TX asli ad1, 3 copy di ring TX ad0, `stats <idx>` cap_tx naik di dua
+sisi. Duplicate `parse` bit arah `mode`/`cap` kini `NL_MODE_*` (kernel:
+TX=0x2, RX=0x1; cek `parse_mode_dir`) — BUKAN bit policy yang masih
+dipakai perintah rule. `nlctl pcap <dump.bin>` mengkonversi
 NCLC → pcap klasik (LE, Ethernet); tidak butuh driver — jalan di host.
 `nlctl vm <off|file>` memasang/mematikan program VM mini-BPF dari teks:
 satu insn per baris (`#` komentar, label `:nama` atau `nama:`),
