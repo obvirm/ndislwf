@@ -301,4 +301,16 @@
      sehingga verifikasi yang sah hanya bisa dilakukan pasca-push.
   4. commit pembersihan di-tree: tip pasca-rewrite = b0c31c3.
   Force-push sukses (5d046c7 → b0c31c3).
+- **GitHub Release v0.1.0** ✅ 2026-11-07: https://github.com/obvirm/l2split/releases/tag/v0.1.0 —
+  asset `l2split_0.1.0_x64-setup.exe` (2,204,980 B, sha256
+  34d6fbf9ab727a99b806ea03ecb80b25066232bffafc974da5df3c253576be8c).
+  Bundel: `npx tauri build` (tauri-cli **2.12.4** dipasang lokal di ui —
+  global cargo-tauri 1.6.6 versi v1 dan TIDAK BISA untuk project Tauri 2;
+  run dari root crate karena CLI mencari tauri.conf.json di cwd/subfolder,
+  bukan parent; frontend `npm run build` dulu karena config tanpa
+  beforeBuildCommand). `bundle.resources` pakai prefix `driver/` agar .sys/
+  .inf/.cat + 6 skrip ps1/cmd masuk `$INSTALL\driver\` — terverifikasi via
+  `7z l` isi installer (9 berkas + app). Alur end-user (notes full English
+  di release): setup → SmartScreen Run anyway → wizard in-app → UAC Yes →
+  reboot otomatis (testsigning ON + RunOnce) → driver terpasang sendiri.
 
