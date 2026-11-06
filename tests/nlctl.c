@@ -128,8 +128,31 @@ static int parse_dir(const char *s, uint32_t *out)
         _stricmp(s, "rxtx") == 0 ||
         _stricmp(s, "both") == 0) { *out = NL_POLICY_EN_TX | NL_POLICY_EN_RX; return 0; }
     if (_stricmp(s, "none") == 0 ||
-        _stricmp(s, "off") == 0)  { *out = 0; return 0; }
+        _stricmp(s, "off") == 0 ||
+        strcmp(s, "0") == 0)      { *out = 0; return 0; }
     return -1;
+}
+
+static int parse_mode_dir(const char *s, uint32_t *out)
+{
+    if (_stricmp(s, "tx") == 0)    { *out = NL_MODE_TX; return 0; }
+    if (_stricmp(s, "rx") == 0)    { *out = NL_MODE_RX; return 0; }
+    if (_stricmp(s, "txrx") == 0 ||
+        _stricmp(s, "rxtx") == 0 ||
+        _stricmp(s, "both") == 0)  { *out = NL_MODE_TX | NL_MODE_RX; return 0; }
+    if (_stricmp(s, "none") == 0 ||
+        _stricmp(s, "off") == 0 ||
+        strcmp(s, "0") == 0)       { *out = 0; return 0; }
+    return -1;
+}
+
+/* cetak bit arah MODE (bukan arah policy): MX_TX=0x2/mx_rx=0x1 == mode */
+static const char *modestr(uint32_t m)
+{
+    if (m == (NL_MODE_TX | NL_MODE_RX)) return "txrx";
+    if (m == NL_MODE_TX)                return "tx";
+    if (m == NL_MODE_RX)                return "rx";
+    return "off";
 }
 
 static int parse_ip(const char *s, uint32_t *ip, uint32_t *mask)
@@ -339,10 +362,10 @@ static int cmd_mode(int argc, char **argv)
     if (argc != 4) return usage();
     idx = need_idx(argv[2]);
     if (idx == 0xFFFFFFFFu) return usage();
-    if (parse_dir(argv[3], &en) != 0) return usage();
+    if (parse_mode_dir(argv[3], &en) != 0) return usage();
     r = nl_set_mode(idx, en);
     if (r != 0) return die_nl("nl_set_mode", r);
-    printf("  mode [%u] = %s\n", idx, dirstr(en));
+    printf("  mode [%u] = %s\n", idx, modestr(en));
     return NLCTL_OK;
 }
 
@@ -473,7 +496,7 @@ static int cmd_cap(int argc, char **argv)
     if (argc < 5 || argc > 6) return usage();
     idx = need_idx(argv[2]);
     if (idx == 0xFFFFFFFFu) return usage();
-    if (parse_dir(argv[3], &en) != 0 || en == 0) return usage();
+    if (parse_mode_dir(argv[3], &en) != 0 || en == 0) return usage();
     secs = 5;
     if (argc == 6) {
         secs = (uint32_t)atol(argv[5]);

@@ -63,7 +63,6 @@ VOID NlVmSet(IN const PNL_VM_PROG Src);
 static BOOLEAN NlVmRun(IN const PUCHAR Data, IN ULONG Len, OUT PULONG RetOut);
 /* v6 (M5): mirror + inject-to target */
 static PMS_FILTER NlMirrorTake(IN PMS_FILTER pSrc, IN BOOLEAN Tx);
-static PMS_FILTER NlFilterByIdxLocked(IN ULONG Idx);
 static VOID NlMirrorDetach(IN PMS_FILTER pFilter);
 static VOID NlPushTx(IN PMS_FILTER pFilter, IN PUCHAR Data, IN ULONG Len);
 static VOID NlPushRx(IN PMS_FILTER pFilter, IN PUCHAR Data, IN ULONG Len);
@@ -3486,7 +3485,7 @@ NlInjectComplete(
     KeReleaseSpinLock(&NlInjLock, OldIrql);
     return FALSE;
 }
-static PMS_FILTER
+PMS_FILTER
 NlFilterByIdxLocked(
     IN ULONG Idx
     )

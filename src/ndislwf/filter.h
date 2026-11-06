@@ -62,6 +62,7 @@ VOID        NlPolicyExSet(const PNL_POLICY_EX Src);
 VOID        NlVmSet(const PNL_VM_PROG Src);
 /* v6 (M5): mirror TX/RX ke adapter target + inject arah TX ke target */
 VOID        NlMirrorSet(const PNL_MIRROR_CFG Src);
+struct _MS_FILTER *NlFilterByIdxLocked(IN ULONG Idx);
 NDIS_STATUS NlInjectTo(ULONG DstIndex, PUCHAR Data, ULONG Len);
 VOID        NlDelayInit(VOID);
 VOID        NlDelayDrain(struct _MS_FILTER *pFilter);

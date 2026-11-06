@@ -383,19 +383,35 @@ FilterDeviceIoControl(
             drop += (ULONG)NlBlocked;   /* policy block (global) + ring drop */
 
             FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
-            for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
             {
-                PMS_FILTER pF = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
-                if (perAdapter && pF->NlIdx != wantIdx)
+                PMS_FILTER pS;
+                if (perAdapter)
                 {
-                    continue;
+                    pS = NlFilterByIdxLocked(wantIdx);
+                    if (pS != NULL)
+                    {
+                        rx += pS->NlRxBytes;
+                        tx += pS->NlTxBytes;
+                        capRx += pS->NlCapRx;
+                        capTx += pS->NlCapTx;
+                        drop += pS->NlTxDrop + pS->NlRxDrop;
+                        units++;
+                    }
                 }
-                rx += pF->NlRxBytes;
-                tx += pF->NlTxBytes;
-                capRx += pF->NlCapRx;
-                capTx += pF->NlCapTx;
-                drop += pF->NlTxDrop + pF->NlRxDrop;
-                units++;
+                else
+                {
+                    PLIST_ENTRY lAll;
+                    for (lAll = FilterModuleList.Flink; lAll != &FilterModuleList; lAll = lAll->Flink)
+                    {
+                        PMS_FILTER pF = CONTAINING_RECORD(lAll, MS_FILTER, FilterModuleLink);
+                        rx += pF->NlRxBytes;
+                        tx += pF->NlTxBytes;
+                        capRx += pF->NlCapRx;
+                        capTx += pF->NlCapTx;
+                        drop += pF->NlTxDrop + pF->NlRxDrop;
+                        units++;
+                    }
+                }
             }
             FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
@@ -429,7 +445,6 @@ FilterDeviceIoControl(
             ULONG cnt;
             ULONG wantIdx = 0;
             PMS_FILTER pSel = NULL;
-            PLIST_ENTRY l2;
 
             if (OutLen < sizeof(ULONG))
             {
@@ -443,23 +458,19 @@ FilterDeviceIoControl(
                 wantIdx = *(volatile UINT32 *)ob;
             }
 
+            /* in (opsional): [u32 adapter_index]; tanpa in = instance pertama.
+             * resolve ORDINAL list (M6+): sama dengan ENUM/SET_MODE/MIRROR. */
             FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
-            for (l2 = FilterModuleList.Flink; l2 != &FilterModuleList; l2 = l2->Flink)
+            if (InLen >= sizeof(UINT32))
             {
-                PMS_FILTER pF = CONTAINING_RECORD(l2, MS_FILTER, FilterModuleLink);
-                if (InLen >= sizeof(UINT32))
-                {
-                    if (pF->NlIdx == wantIdx)
-                    {
-                        pSel = pF;
-                        break;
-                    }
-                }
-                else
-                {
-                    pSel = pF;
-                    break;
-                }
+                pSel = NlFilterByIdxLocked(wantIdx);
+            }
+            else
+            {
+                pSel = (FilterModuleList.Flink != &FilterModuleList)
+                     ? CONTAINING_RECORD(FilterModuleList.Flink, MS_FILTER,
+                                         FilterModuleLink)
+                     : NULL;
             }
             /* tahan lifetime di luar kunci (drain dipanggil pasca release) */
             if (pSel != NULL)
