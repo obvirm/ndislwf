@@ -37,6 +37,8 @@ extern "C" {
 #define NL_IOC_POLICY_EX  0x89002034u  /* fn 0x80d (v4/M3) */
 #define NL_IOC_DELAYSTAT  0x89002038u  /* fn 0x80e (v4/M3) */
 #define NL_IOC_PROGRAM    0x8900203Cu  /* fn 0x80f (v5/M4) */
+#define NL_IOC_MIRROR     0x89002040u  /* fn 0x810 (v6/M5) */
+#define NL_IOC_INJECT_TO  0x89002044u  /* fn 0x811 (v6/M5) */
 
 #define NL_ABI_MAGIC      0x31504C4Eu  /* 'NLP1' */
 #define NL_ABI_VERSION    0x00010000u  /* v1.0 */
@@ -264,6 +266,23 @@ typedef struct nl_event {
     uint64_t handle;                /* user handle (SynchronizationEvent) */
 } nl_event_t;
 
+/* --- v6 (M5): MIRROR + REDIRECT -------------------------------------------- */
+
+#define NL_MIRROR_TX   0x1u            /* mirror arah TX */
+#define NL_MIRROR_RX   0x2u            /* mirror arah RX */
+
+typedef struct nl_mirror_cfg {
+    uint32_t src_index;                 /* adapter sumber */
+    uint32_t dst_index;                 /* adapter target */
+    uint32_t flags;                     /* NL_MIRROR_* | 0 = matikan semua */
+} nl_mirror_cfg_t;
+
+typedef struct nl_inject_to {
+    uint32_t dst_index;                 /* adapter target TX inject */
+    uint32_t len;                       /* frame 1..NL_FRAME_MAX */
+    uint8_t  data[NL_FRAME_MAX];
+} nl_inject_to_t;
+
 /* --- API ------------------------------------------------------------------ */
 
 /* Buka \\. \ndislwf. 0 = sukses; selain itu last error Win32. */
@@ -307,6 +326,12 @@ NL_API int  nl_delay_stat(nl_delay_stat_t* out);
 
 /* v5: pasang program VM (rule terkompilasi); count=0 mematikan. 0 = sukses. */
 NL_API int  nl_vm_set(const nl_vm_prog_t* prog);
+
+/* v6: pasang/cabut mirror (flags=0 = matikan semua arah). 0 = sukses. */
+NL_API int  nl_mirror_set(const nl_mirror_cfg_t* cfg);
+
+/* v6: inject TX ke adapter tertentu (REDIRECT). 0 = sukses. */
+NL_API int  nl_inject_to(uint32_t dst_index, const void* data, uint32_t len);
 
 /* Suntik frame ke jalur RX (replay, v3). 0 = sukses. */
 NL_API int  nl_inject_rx(const void* data, uint32_t len);

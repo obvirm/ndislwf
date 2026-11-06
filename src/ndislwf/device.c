@@ -576,6 +576,46 @@ FilterDeviceIoControl(
             break;
         }
 
+        /* v6 (M5): pasang/cabut mirror adapter→adapter */
+        case NL_IOCTL_MIRROR:
+        {
+            PNL_MIRROR_CFG pm = (PNL_MIRROR_CFG)Irp->AssociatedIrp.SystemBuffer;
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+
+            if (InLen != sizeof(NL_MIRROR_CFG) || pm == NULL)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            NlMirrorSet(pm);
+            Status = STATUS_SUCCESS;
+            InfoLength = 0;
+            break;
+        }
+
+        /* v6 (M5): inject TX ke adapter tertentu (REDIRECT) */
+        case NL_IOCTL_INJECT_TO:
+        {
+            PNL_INJECT_TO pj = (PNL_INJECT_TO)Irp->AssociatedIrp.SystemBuffer;
+            ULONG InLen = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+            NDIS_STATUS st;
+
+            if (InLen < sizeof(NL_INJECT_TO) || pj->Len == 0 || pj->Len > NL_FRAME_MAX)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+
+            st = NlInjectTo(pj->DstIndex, pj->Data, pj->Len);
+            Status = (st == NDIS_STATUS_SUCCESS) ? STATUS_SUCCESS
+                   : (st == NDIS_STATUS_RESOURCES) ? STATUS_INSUFFICIENT_RESOURCES
+                   : (st == NDIS_STATUS_INVALID_STATE) ? STATUS_DEVICE_NOT_READY
+                   : STATUS_INVALID_PARAMETER;
+            InfoLength = 0;
+            break;
+        }
+
         case NL_IOCTL_INJECT_RX:
         {
             PNL_INJECT pj = (PNL_INJECT)Irp->AssociatedIrp.SystemBuffer;

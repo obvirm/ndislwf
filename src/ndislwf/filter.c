@@ -61,6 +61,12 @@ static volatile LONG       NlVmActive = 0;       /* 1 = program VM tayang */
 static volatile LONG       NlVmEn = 0;           /* mask arah program VM */
 VOID NlVmSet(IN const PNL_VM_PROG Src);
 static BOOLEAN NlVmRun(IN const PUCHAR Data, IN ULONG Len, OUT PULONG RetOut);
+/* v6 (M5): mirror + inject-to target */
+static PMS_FILTER NlMirrorTake(IN PMS_FILTER pSrc, IN BOOLEAN Tx);
+static PMS_FILTER NlFilterByIdxLocked(IN ULONG Idx);
+static VOID NlMirrorDetach(IN PMS_FILTER pFilter);
+static VOID NlPushTx(IN PMS_FILTER pFilter, IN PUCHAR Data, IN ULONG Len);
+static VOID NlPushRx(IN PMS_FILTER pFilter, IN PUCHAR Data, IN ULONG Len);
 static ULONG               NlRngSeed[NL_POLICY_MAX_RULES];
 static ULONG64             NlRateTok[NL_POLICY_MAX_RULES];
 static LARGE_INTEGER       NlRateLast[NL_POLICY_MAX_RULES];
@@ -95,7 +101,7 @@ static KDPC                   NlDelayDpc;
 static LARGE_INTEGER          NlDelayArmed;      /* due yang sedang dipasang */
 static BOOLEAN                NlDelayArmedValid;
 
-static NDIS_STATUS NlInjectTxCore(PUCHAR Data, ULONG Len);
+static NDIS_STATUS NlInjectTxCore(PUCHAR Data, ULONG Len, PMS_FILTER Target);
 static NDIS_STATUS NlInjectRxCore(PUCHAR Data, ULONG Len);
 static VOID NlDelayFire(PNL_DELAY_ITEM it);
 
@@ -311,7 +317,7 @@ NlDelayFire(
     }
     else if (it->Kind == NL_DELAY_KIND_TX)
     {
-        (VOID)NlInjectTxCore(it->Data, it->Len);
+        (VOID)NlInjectTxCore(it->Data, it->Len, NULL);
     }
     else if (it->Kind == NL_DELAY_KIND_RX)
     {
@@ -1110,6 +1116,9 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
     /* v4: belt-and-braces — pause sudah men-drain NBL delay milik instance
      * ini; kalau ada yang lolos (TrackSends=FALSE dsb.) buang di sini. */
     NlDelayDrain(pFilter);
+
+    /* v6 (M5): lepas mirror sebagai Src maupun Dst sebelum list-ref turun. */
+    NlMirrorDetach(pFilter);
 
     //
     // Free filter instance name if allocated.
@@ -2850,14 +2859,14 @@ NlRingDrain(
  * v2: capture helper — target internal ring vs shared-memory ring
  * ---------------------------------------------------------------- */
 
-VOID
-NlTxCapture(
+static VOID
+NlPushTx(
     IN PMS_FILTER pFilter,
     IN PUCHAR Data,
     IN ULONG Len
     )
-/*++  Pilih target ring TX: shared-memory (zero-copy ke user) bila mapped,
-     lainnya ring internal. Dipanggil di <=DISPATCH_LEVEL. --*/
+/*++  v6 (M5): push ring TX tanpa mirror (shm bila mapped, ring internal).
+     Dipanggil <=DISPATCH_LEVEL. --*/
 {
     KIRQL OldIrql;
     LONG slot;
@@ -2917,13 +2926,34 @@ NlTxCapture(
 }
 
 VOID
-NlRxCapture(
+NlTxCapture(
     IN PMS_FILTER pFilter,
     IN PUCHAR Data,
     IN ULONG Len
     )
-/*++  Padanan TX untuk arah RX. Semua akses SHM memakai NlTxRingLock
-     (map/unmap/event menulis di kunci sama — hindari kata dua kunci). --*/
+/*++  Push capture TX + v6 (M5): mirror ke ring adapter target bila --
+     pasangan diatur lewat MIRROR ioctl. Ref target diambil semalam
+     (FilterListLock) supaya target tak bisa terbebaskan di tengah push. --*/
+{
+    PMS_FILTER Dst;
+
+    NlPushTx(pFilter, Data, Len);
+
+    Dst = NlMirrorTake(pFilter, TRUE);
+    if (Dst != NULL)
+    {
+        NlPushTx(Dst, Data, Len);
+        filterDereferenceModule(Dst);
+    }
+}
+
+static VOID
+NlPushRx(
+    IN PMS_FILTER pFilter,
+    IN PUCHAR Data,
+    IN ULONG Len
+    )
+/*++  v6 (M5): push ring RX tanpa mirror (shm bila mapped, ring internal). --*/
 {
     KIRQL OldIrql;
     LONG slot;
@@ -2975,6 +3005,26 @@ NlRxCapture(
                       &pFilter->NlRxDrop, Data, Len, NL_RING_RX))
     {
         InterlockedIncrement64(&pFilter->NlCapRx);
+    }
+}
+
+VOID
+NlRxCapture(
+    IN PMS_FILTER pFilter,
+    IN PUCHAR Data,
+    IN ULONG Len
+    )
+/*++  Push capture RX + v6 (M5): mirror ke ring target bila diatur. --*/
+{
+    PMS_FILTER Dst;
+
+    NlPushRx(pFilter, Data, Len);
+
+    Dst = NlMirrorTake(pFilter, FALSE);
+    if (Dst != NULL)
+    {
+        NlPushRx(Dst, Data, Len);
+        filterDereferenceModule(Dst);
     }
 }
 
@@ -3422,12 +3472,195 @@ NlInjectComplete(
     KeReleaseSpinLock(&NlInjLock, OldIrql);
     return FALSE;
 }
+static PMS_FILTER
+NlFilterByIdxLocked(
+    IN ULONG Idx
+    )
+/*++  v6 (M5): instance urutannya sama dengan ENUM (Flink ke belakang).
+     Dipanggil dengan FilterListLock SUDAH dipegang. --*/
+{
+    PLIST_ENTRY Link;
+    PMS_FILTER pF;
+    ULONG i;
+
+    for (Link = FilterModuleList.Flink, i = 0;
+         Link != &FilterModuleList;
+         Link = Link->Flink, ++i)
+    {
+        pF = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+        if (i == Idx)
+        {
+            return pF;
+        }
+    }
+    return NULL;
+}
+
+static PMS_FILTER
+NlMirrorTake(
+    IN PMS_FILTER pSrc,
+    IN BOOLEAN Tx
+    )
+/*++  v6 (M5): resolve target mirror (TX=TRUE / RX=FALSE) dan ambil satu
+     referensi (snapshot + ref di bawah FilterListLock); caller wajib
+     filterDereferenceModule setelah selesai memakainya. Target yang sudah
+     detach di-skip. --*/
+{
+    PMS_FILTER Dst;
+    BOOLEAN bFalse = FALSE;
+
+    FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+    Dst = Tx ? pSrc->NlMirrorTx : pSrc->NlMirrorRx;
+    if (Dst != NULL)
+    {
+        if (Dst->NlDetached)
+        {
+            Dst = NULL;
+        }
+        else
+        {
+            InterlockedIncrement((volatile LONG *)&Dst->RefCount);
+        }
+    }
+    FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+    return Dst;
+}
+
+#define NL_MIRROR_BATCH     32
+
+static VOID
+NlMirrorDetach(
+    IN PMS_FILTER pFilter
+    )
+/*++  v6 (M5): lepaskan semua pasangan mirror yang menyentuh instance ini
+     — sebagai Src (clear pointer sendiri) maupun sebagai Dst (cari di
+     list). Ref dilepas sesudah lock. Dipanggil dari FilterDetach SEBELUM
+     list-ref diturunkan, jadi ref >= 1 dan deref di sini tidak pernah
+     membebaskan memori instance. --*/
+{
+    PLIST_ENTRY Link;
+    PMS_FILTER  pOther;
+    BOOLEAN     bFalse = FALSE;
+    PMS_FILTER  Batch[NL_MIRROR_BATCH];
+    ULONG       n, i;
+
+    do
+    {
+        n = 0;
+        FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+
+        if (pFilter->NlMirrorTx != NULL && n < NL_MIRROR_BATCH)
+        {
+            Batch[n++] = pFilter->NlMirrorTx;
+            pFilter->NlMirrorTx = NULL;
+        }
+        if (pFilter->NlMirrorRx != NULL && n < NL_MIRROR_BATCH)
+        {
+            Batch[n++] = pFilter->NlMirrorRx;
+            pFilter->NlMirrorRx = NULL;
+        }
+
+        for (Link = FilterModuleList.Flink;
+             Link != &FilterModuleList;
+             Link = Link->Flink)
+        {
+            pOther = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+            if (pOther == pFilter)
+            {
+                continue;
+            }
+            if (pOther->NlMirrorTx == pFilter && n < NL_MIRROR_BATCH)
+            {
+                Batch[n++] = pFilter;
+                pOther->NlMirrorTx = NULL;
+            }
+            if (pOther->NlMirrorRx == pFilter && n < NL_MIRROR_BATCH)
+            {
+                Batch[n++] = pFilter;
+                pOther->NlMirrorRx = NULL;
+            }
+        }
+
+        FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+
+        for (i = 0; i < n; i++)
+        {
+            filterDereferenceModule(Batch[i]);
+        }
+    } while (n == NL_MIRROR_BATCH);
+}
+
+VOID
+NlMirrorSet(
+    IN const PNL_MIRROR_CFG Src
+    )
+/*++  v6 (M5): pasang/cabut mirror per arah. Dst di-refer (RefCount) dan
+     dilepas lewat NlMirrorDetach saat salah satu sisi detach. Flags=0 atau
+     DstIndex==SrcIndex menonaktifkan pasangan. --*/
+{
+    PMS_FILTER pSrc, pDst, pOldTx, pOldRx;
+    BOOLEAN bFalse = FALSE;
+
+    if (Src == NULL)
+    {
+        return;
+    }
+
+    FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+    pSrc = NlFilterByIdxLocked(Src->SrcIndex);
+    pDst = (Src->Flags == 0) ? NULL : NlFilterByIdxLocked(Src->DstIndex);
+
+    if (pSrc != NULL && pDst != NULL && pSrc == pDst)
+    {
+        pDst = NULL;    /* mirror ke diri sendiri ditolak */
+    }
+
+    /* lepas pasangan lama (pointer diangkat duluan, ref dilepas sesudah
+     * lock — filterDereferenceModule menaikkan kunci yang sama). */
+    pOldTx = NULL;
+    pOldRx = NULL;
+    if (pSrc != NULL)
+    {
+        pOldTx = pSrc->NlMirrorTx;
+        pSrc->NlMirrorTx = NULL;
+        pOldRx = pSrc->NlMirrorRx;
+        pSrc->NlMirrorRx = NULL;
+
+        if (pDst != NULL && pDst->State == FilterRunning)
+        {
+            if ((Src->Flags & NL_MIRROR_TX) != 0)
+            {
+                InterlockedIncrement((volatile LONG *)&pDst->RefCount);
+                pSrc->NlMirrorTx = pDst;
+            }
+            if ((Src->Flags & NL_MIRROR_RX) != 0)
+            {
+                InterlockedIncrement((volatile LONG *)&pDst->RefCount);
+                pSrc->NlMirrorRx = pDst;
+            }
+        }
+    }
+    FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+
+    if (pOldTx != NULL)
+    {
+        filterDereferenceModule(pOldTx);
+    }
+    if (pOldRx != NULL)
+    {
+        filterDereferenceModule(pOldRx);
+    }
+}
+
 static NDIS_STATUS
 NlInjectTxCore(
     IN PUCHAR Data,
-    IN ULONG Len
+    IN ULONG Len,
+    IN PMS_FILTER Target
     )
-/*++  Core inject TX tanpa evaluasi policy (replay frame delay DPC). --*/
+/*++  Core inject TX tanpa evaluasi policy; Target=NULL = adapter pertama
+     yang jalan (replay frame delay DPC). Caller (NlInjectTo) pegang ref
+     target supaya instance tidak hilang di tengah. --*/
 {
     PNL_INJ_ENTRY   Ent;
     PMDL            Mdl;
@@ -3493,9 +3726,10 @@ NlInjectTxCore(
     KeReleaseSpinLock(&NlInjLock, OldIrql);
 
     FILTER_ACQUIRE_LOCK(&FilterListLock, FALSE);
-    for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+    if (Target != NULL)
     {
-        pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+        /* REDIRECT: kirim ke adapter target persis (ref dipegang caller). */
+        pFilter = Target;
         if (pFilter->State == FilterRunning)
         {
             InterlockedIncrement64(&NlInj);
@@ -3504,7 +3738,23 @@ NlInjectTxCore(
                                     NDIS_DEFAULT_PORT_NUMBER,
                                     NDIS_SEND_FLAGS_DISPATCH_LEVEL);
             Sent = TRUE;
-            break;
+        }
+    }
+    else
+    {
+        for (Link = FilterModuleList.Flink; Link != &FilterModuleList; Link = Link->Flink)
+        {
+            pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+            if (pFilter->State == FilterRunning)
+            {
+                InterlockedIncrement64(&NlInj);
+                NdisFSendNetBufferLists(pFilter->FilterHandle,
+                                        Nbl,
+                                        NDIS_DEFAULT_PORT_NUMBER,
+                                        NDIS_SEND_FLAGS_DISPATCH_LEVEL);
+                Sent = TRUE;
+                break;
+            }
         }
     }
     FILTER_RELEASE_LOCK(&FilterListLock, FALSE);
@@ -3564,7 +3814,58 @@ NlInjectTx(
         InterlockedIncrement64(&NlBlockedTx);
         return NDIS_STATUS_SUCCESS;
     }
-    return NlInjectTxCore(Data, Len);
+    return NlInjectTxCore(Data, Len, NULL);
+}
+
+NDIS_STATUS
+NlInjectTo(
+    IN ULONG DstIndex,
+    IN PUCHAR Data,
+    IN ULONG Len
+    )
+/*++  v6 (M5): REDIRECT — inject TX ke adapter tertentu. Resolve target
+     di bawah lock + refer; kirimpun setelah release lock. Target tidak
+     ada → NDIS_STATUS_INVALID_PARAMETER. --*/
+{
+    PMS_FILTER  pTarget = NULL;
+    ULONG       Tries;
+    BOOLEAN     bFalse = FALSE;
+    NDIS_STATUS Status;
+
+    if (Len == 0 || Len > NL_FRAME_MAX || NlInjectNblPool == NULL)
+    {
+        return NDIS_STATUS_INVALID_PARAMETER;
+    }
+
+    /* Beberapa percobaan singkat: target bisa sedang detach. */
+    for (Tries = 0; Tries < 4; Tries++)
+    {
+        FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+        pTarget = NlFilterByIdxLocked(DstIndex);
+        if (pTarget != NULL && pTarget->State == FilterRunning)
+        {
+            InterlockedIncrement((volatile LONG *)&pTarget->RefCount);
+        }
+        else
+        {
+            pTarget = NULL;
+        }
+        FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+
+        if (pTarget != NULL)
+        {
+            break;
+        }
+        KeStallExecutionProcessor(1000);    /* 1 ms per percobaan */
+    }
+    if (pTarget == NULL)
+    {
+        return NDIS_STATUS_INVALID_PARAMETER;
+    }
+
+    Status = NlInjectTxCore(Data, Len, pTarget);
+    filterDereferenceModule(pTarget);
+    return Status;
 }
 
 static NDIS_STATUS

@@ -55,6 +55,8 @@ Semua METHOD_BUFFERED, access FILE_ANY_ACCESS, device 0x8900:
 0x89002034 POLICY_EX    (in: NL_POLICY_EX = 712 B; count=0 → kembali ke POLICY lama)
 0x89002038 DELAYSTAT    (out: NL_DELAY_STAT = pending + fired u64)
 0x8900203C PROGRAM      (in: NL_VM_PROG = 520 B; count=0 → kembali ke tabel EX/POLICY)
+0x89002040 MIRROR       (in: NL_MIRROR_CFG = src+dst+flags; bit0 TX bit1 RX; 0 = matikan semua)
+0x89002044 INJECT_TO    (in: NL_INJECT_TO = dst+len+data[1514]; TX inject ke adapter tertentu)
 ```
 
 ### Ring shared-memory (zero-copy)
@@ -120,3 +122,14 @@ bisa dibangun dari satu program; DELAY param = ms, DROP_PCT = %, RATE = kbps.
 Hit program tercatat di `NlRuleHits[0]` (slot 0); program match field apa pun
 via ABS/IND offset byte frame (MAC, IP header, port). `enabled` bitmask
 (NL_POLICY_EN_TX/RX) menentukan arah yang dievaluasi program.
+
+### Mirror adapter→adapter + redirect (v6/M5)
+
+`MIRROR` memasang salinan frame antar adapter: frame yang dicapture pada
+adapter sumber (arah TX dan/atau RX, per `NL_MIRROR_*` flag) juga ditulis ke
+ring target (`NlPushTx/NlPushRx` target) lengkap dgn counter/event target.
+Pasangan disimpan per-instance (`NlMirrorTx/NlMirrorRx`), target di-refer
+(RefCount) dan dilepas otomatis saat salah satu sisi detach
+(`NlMirrorDetach`). `flags=0` atau `DstIndex==SrcIndex` mematikan pasangan.
+`INJECT_TO` mengirim frame ke adapter tertentu (redirect — instance target
+di-refer selama send).

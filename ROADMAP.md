@@ -42,8 +42,17 @@
   pending 10 → fired 10 antrean kering) + `full` 58/58 pass (stage vm M4 masuk suka 9/11).
 
 ### M5 Mirror + redirect + shim compat
-- MIRROR: salin frame ke adapter lain/mon-mode (telaah pairing adapters); REDIRECT: kirim ulang ke NEIGHBOR adapter.
-- `nllegacy.dll` shim: mirror API legacy filter (AdaptersEnumerateGetNative, PacketsSend, PacketsGet) → panggilan pintas ADI nlbridge — tool lama tanpa recompilasi.
+- [x] MIRROR ✅ 2026-11-06: salin frame capture adapter sumber ke ring adapter target per arah
+  (`NL_MIRROR_TX/RX`, ioctl `0x89002040`). Pasangan per-instance (`NlMirrorTx/NlMirrorRx`),
+  target nalloc di bawah `FilterListLock` (`NlMirrorTake`, skip `NlDetached`) dan di-deref
+  pasca-push; pasangan di-refer (RefCount per arah) dan dilepas `NlMirrorDetach` di
+  `FilterDetach` (dipanggil sebelum list-ref turun). Self-pair & flags=0 = matikan.
+- [x] REDIRECT ✅ 2026-11-06: `INJECT_TO` (0x89002044) kirim frame ke adapter tertentu —
+  `NlInjectTo` resolve target + refer di bawah lock (4x retry 1 ms), `NlInjectTxCore(Target)`
+  kirim ke instance target persis; delay-replay memakai `Target=NULL` (first-running).
+- [x] Test nlstress `mirror`: inject_to ret+counter, mirror ON → ring dst terisi entri TX,
+  mirror OFF → berhenti, self-pair noop ret=0; masuk `full` stage 10/12.
+- [ ] `nllegacy.dll` shim: mirror API legacy filter (AdaptersEnumerateGetNative, PacketsSend, PacketsGet) → panggilan pintas ABI nlbridge — tool lama tanpa recompilasi.
 
 ### M6 Hardening produksi
 - Sertifikat produksi (bukan test-sign), WHQL attestation jika perlu.
@@ -51,5 +60,5 @@
 
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.
-- Semua ioctl METHOD_BUFFERED; codes: 0x89002000 + (fn-0x800)<<2; INJECT_RX=0x8900202C (0x80b), RULEHITS=0x89002030 (0x80c), POLICY_EX=0x89002034 (0x80d), DELAYSTAT=0x89002038 (0x80e), PROGRAM=0x8900203C (0x80f); next free = 0x89002040 ke atas (0x810).
+- Semua ioctl METHOD_BUFFERED; codes: 0x89002000 + (fn-0x800)<<2; INJECT_RX=0x8900202C (0x80b), RULEHITS=0x89002030 (0x80c), POLICY_EX=0x89002034 (0x80d), DELAYSTAT=0x89002038 (0x80e), PROGRAM=0x8900203C (0x80f), MIRROR=0x89002040 (0x810), INJECT_TO=0x89002044 (0x811); next free = 0x89002048 (0x812).
 - Struct ring entry 1524 B tidak diubah (kunci ABI shm).

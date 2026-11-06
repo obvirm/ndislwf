@@ -117,6 +117,8 @@ typedef struct _FILTER_WRITE_CONFIG
 
 /* v5 (M4): VM mini BPF klasik — rule terkompilasi */
 #define NL_IOCTL_PROGRAM    NL_CODE(0x80f)
+#define NL_IOCTL_MIRROR     NL_CODE(0x810)
+#define NL_IOCTL_INJECT_TO  NL_CODE(0x811)
 
 #define NL_ABI_MAGIC   0x31504C4Eu   /* 'NLP1' */
 #define NL_ABI_VERSION ((1UL << 16) | 0UL)
@@ -369,6 +371,25 @@ typedef struct _NL_MAP_RING {
 typedef struct _NL_EVENT {
     ULONG64 Handle;                     /* user handle event (SynchronizationEvent) */
 } NL_EVENT, *PNL_EVENT;
+
+/* ----------------------------------------------------------------
+ * v6 (M5): MIRROR + INJECT_TO
+ * ---------------------------------------------------------------- */
+
+#define NL_MIRROR_TX   0x1              /* mirror arah TX (capture TX) */
+#define NL_MIRROR_RX   0x2              /* mirror arah RX (capture RX) */
+
+typedef struct _NL_MIRROR_CFG {
+    ULONG       SrcIndex;               /* adapter sumber (0..) */
+    ULONG       DstIndex;               /* adapter target */
+    ULONG       Flags;                  /* NL_MIRROR_* | 0 = matikan semua */
+} NL_MIRROR_CFG, *PNL_MIRROR_CFG;
+
+typedef struct _NL_INJECT_TO {
+    ULONG       DstIndex;               /* adapter target TX inject */
+    ULONG       Len;                    /* frame 1..NL_FRAME_MAX */
+    UCHAR       Data[NL_FRAME_MAX];
+} NL_INJECT_TO, *PNL_INJECT_TO;
 
 #endif //__FILTERUSER_H__
 

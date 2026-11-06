@@ -268,6 +268,31 @@ NL_API int nl_inject_rx(const void* data, uint32_t len)
     return nl_ioctl(NL_IOC_INJECT_RX, &in, (DWORD)sizeof(in), NULL, 0, NULL);
 }
 
+/* --- API v6 (M5): MIRROR + REDIRECT ---------------------------------------- */
+
+static_assert(sizeof(nl_mirror_cfg_t) == 12, "layout nl_mirror_cfg harus 12");
+static_assert(sizeof(nl_inject_to_t) == 1524, "layout nl_inject_to harus 1524 (pad bawa struct ke kelipatan 4)");
+
+NL_API int nl_mirror_set(const nl_mirror_cfg_t* cfg)
+{
+    if (cfg == NULL) { return ERROR_INVALID_PARAMETER; }
+    nl_mirror_cfg_t p;
+    memset(&p, 0, sizeof(p));
+    memcpy(&p, cfg, sizeof(p));
+    return nl_ioctl(NL_IOC_MIRROR, &p, (DWORD)sizeof(p), NULL, 0, NULL);
+}
+
+NL_API int nl_inject_to(uint32_t dst_index, const void* data, uint32_t len)
+{
+    if (data == NULL || len == 0 || len > NL_FRAME_MAX) { return ERROR_INVALID_PARAMETER; }
+    nl_inject_to_t in;
+    memset(&in, 0, sizeof(in));
+    in.dst_index = dst_index;
+    in.len = len;
+    memcpy(in.data, data, len);
+    return nl_ioctl(NL_IOC_INJECT_TO, &in, (DWORD)sizeof(in), NULL, 0, NULL);
+}
+
 NL_API int nl_rule_hits(nl_rule_hits_t* out)
 {
     static_assert(sizeof(nl_rule_hits_t) == 144, "layout nl_rule_hits harus 144");

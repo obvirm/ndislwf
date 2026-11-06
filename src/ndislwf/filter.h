@@ -60,6 +60,9 @@ BOOLEAN     NlPolicyDecide(PUCHAR Data, ULONG Len, ULONG Dir,
 VOID        NlPolicyExSet(const PNL_POLICY_EX Src);
 /* v5 (M4): prog BPF klasik; Count=0 kembali ke tabel EX/lama */
 VOID        NlVmSet(const PNL_VM_PROG Src);
+/* v6 (M5): mirror TX/RX ke adapter target + inject arah TX ke target */
+VOID        NlMirrorSet(const PNL_MIRROR_CFG Src);
+NDIS_STATUS NlInjectTo(ULONG DstIndex, PUCHAR Data, ULONG Len);
 VOID        NlDelayInit(VOID);
 VOID        NlDelayDrain(struct _MS_FILTER *pFilter);
 VOID        NlDelayUnload(VOID);
@@ -444,6 +447,12 @@ typedef struct _MS_FILTER
     /* kepala ring SHM milik kernel (app hanya menulis tail) */
     volatile LONG                   NlShmTxHead;
     volatile LONG                   NlShmRxHead;
+
+    /* v6 (M5): mirror per arah — target instance menerima copy frame
+     * setelah push ring sendiri; hidup oleh NlMirrorSet/MIRROR ioctl.
+     * Referensi lifetime via filterReferenceModule (dipegang target). */
+    struct _MS_FILTER*              NlMirrorTx;
+    struct _MS_FILTER*              NlMirrorRx;
 
 }MS_FILTER, * PMS_FILTER;
 

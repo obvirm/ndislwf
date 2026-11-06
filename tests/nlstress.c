@@ -784,6 +784,137 @@ tVm(void)
     return 1;
 }
 
+static void
+udpTx(uint32_t n)
+/*++ anchor TX nyata: socket UDP broadcast (pola tCapture). --*/
+{
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { return; }
+    {
+        SOCKET sd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sd != INVALID_SOCKET)
+        {
+            struct sockaddr_in sa;
+            const char pay[24] = "nlstress-mirror-probe";
+            DWORD br = 1;
+            uint32_t i;
+            (void)setsockopt(sd, SOL_SOCKET, SO_BROADCAST, (char *)&br, sizeof br);
+            memset(&sa, 0, sizeof sa);
+            sa.sin_family = AF_INET;
+            sa.sin_port = htons(47601);
+            sa.sin_addr.s_addr = 0xFFFFFFFFu;   /* broadcast */
+            for (i = 0; i < n; ++i)
+            {
+                (void)sendto(sd, pay, sizeof pay, 0, (SOCKADDR *)&sa, sizeof sa);
+            }
+            closesocket(sd);
+        }
+    }
+    WSACleanup();
+}
+
+static int
+drainAdpt(uint32_t idx, nl_ring_entry_t rb[], int max)
+{
+    int rn = 0;
+    int e = nl_read_ring(&idx, rb, max, &rn);
+    if (e != 0) { return -1; }
+    return rn;
+}
+
+static int
+tMirror(void)
+/*++  M5: MIRROR TX + REDIRECT inject-to.
+      Redirect: nl_inject_to ret=0 + counter injected naik (NlInjectTxCore).
+      Mirror: nl_mirror_set(src->dst, TX) — TX socket nyata di src harus
+      muncul sebagai entri NL_RING_TX di ring internal dst; nircmap off
+      (flags=0) menghentikannya. Mirror ke diri sendiri ditolak (noop). --*/
+{
+    nl_adapter_t ad[NL_MAX_ADAPTERS];
+    nl_ring_entry_t rb[64];
+    nl_stats_t s0, s1;
+    nl_mirror_cfg_t m;
+    int n = 0, r, rn0, rn1, rn2;
+    uint32_t src, dst;
+
+    memset(ad, 0, sizeof ad);
+    r = nl_enum(ad, NL_MAX_ADAPTERS, &n);
+    CHECK("mirror: enum", r == 0 && n >= 1);
+    if (r != 0 || n < 1) { return 0; }
+    src = ad[0].index;
+    dst = (n >= 2) ? ad[1].index : src;
+    printf("      mirror: src=%u dst=%u%s\n", src, dst,
+           (n >= 2) ? "" : "  (1 adapter: dst==src)");
+
+    /* ---- REDIRECT: inject_to ret + counter injected ---- */
+    memset(&s0, 0, sizeof s0); (void)nl_stats(&src, &s0);
+    {
+        uint8_t f[NL_FRAME_MAX];
+        uint32_t len = buildFrame(f, 84, NL_PROTO_UDP, 46111, MAC_BC, 9);
+        r = nl_inject_to(dst, f, len);
+    }
+    printf("      redirect: nl_inject_to ret=%d\n", r);
+    CHECK("mirror: inject_to diterima", r == 0);
+    Sleep(100);
+    memset(&s1, 0, sizeof s1); (void)nl_stats(&src, &s1);
+    printf("      redirect: injected %llu -> %llu\n",
+           (unsigned long long)s0.injected, (unsigned long long)s1.injected);
+    CHECK("mirror: inject_to dihitung kernel", s1.injected > s0.injected);
+
+    /* ---- baseline: ring dst harus kosong sebelum mirror ---- */
+    rn0 = drainAdpt(dst, rb, 64);
+    printf("      mirror: baseline dst ring n=%d\n", rn0);
+
+    /* ---- mirror self ditolak (noop; tak boleh crash) ---- */
+    memset(&m, 0, sizeof m);
+    m.src_index = src;
+    m.dst_index = src;
+    m.flags     = NL_MIRROR_TX;
+    r = nl_mirror_set(&m);
+    CHECK("mirror: set self noop ret=0", r == 0);
+
+    /* ---- mirror src->dst TX ON ---- */
+    memset(&m, 0, sizeof m);
+    m.src_index = src;
+    m.dst_index = dst;
+    m.flags     = NL_MIRROR_TX;
+    r = nl_mirror_set(&m);
+    printf("      mirror: nl_mirror_set(tx) ret=%d\n", r);
+    CHECK("mirror: set ON", r == 0);
+
+    udpTx(12);
+    Sleep(300);
+    rn1 = drainAdpt(dst, rb, 64);
+    printf("      mirror: dst ring setelah ON n=%d flags0=0x%X len0=%u\n",
+           rn1, (rn1 > 0) ? rb[0].flags : 0, (rn1 > 0) ? rb[0].len : 0);
+    if (n >= 2)
+    {
+        CHECK("mirror: TX dst menerima", rn1 > 0);
+        CHECK("mirror: entri flag TX", (rb[0].flags & NL_RING_TX) != 0);
+    }
+    else
+    {
+        /* 1 adapter: self-pair = noop kernel → tak ada entri baru. */
+        CHECK("mirror: self-pair noop (ring tetap kosong)", rn1 == 0);
+    }
+
+    /* ---- mirror OFF: dst berhenti menerima ---- */
+    memset(&m, 0, sizeof m);
+    m.src_index = src;
+    m.dst_index = dst;
+    m.flags     = 0;
+    r = nl_mirror_set(&m);
+    CHECK("mirror: set OFF", r == 0);
+    Sleep(50);
+    udpTx(12);
+    Sleep(300);
+    rn2 = drainAdpt(dst, rb, 64);
+    printf("      mirror: dst ring setelah OFF n=%d (baseline0=%d)\n", rn2, rn0);
+    if (n >= 2) { CHECK("mirror: OFF menghentikan", rn2 == 0); }
+
+    return 1;
+}
+
 static int
 tBench(int seconds)
 /*++  M2 batch drain async. Dua fase, masing-masing `seconds` detik, 4 thread
@@ -1123,32 +1254,34 @@ static int
 tFull(void)
 {
     int rc;
-    printf("=== (1/11) version & enum ===\n");
+    printf("=== (1/12) version & enum ===\n");
     if (!tVersion()) { printf("GAGAL early\n"); return 3; }
     (void)tEnum();
     (void)tStats();
-    printf("=== (2/11) capture 3s ===\n");
+    printf("=== (2/12) capture 3s ===\n");
     (void)tCapture(3);
-    printf("=== (3/11) inject 4000 ===\n");
+    printf("=== (3/12) inject 4000 ===\n");
     (void)tInject(4000);
-    printf("=== (4/11) policy blok TX ===\n");
+    printf("=== (4/12) policy blok TX ===\n");
     (void)tPolicy();
     (void)tPolicy2();
-    printf("=== (5/11) inject RX ===\n");
+    printf("=== (5/12) inject RX ===\n");
     (void)tInjectRx();
-    printf("=== (6/11) hit per rule ===\n");
+    printf("=== (6/12) hit per rule ===\n");
     (void)tRuleHits();
-    printf("=== (7/11) policy blok RX ===\n");
+    printf("=== (7/12) policy blok RX ===\n");
     (void)tPolicyRx();
-    printf("=== (8/11) netem (M3) ===\n");
+    printf("=== (8/12) netem (M3) ===\n");
     (void)tNetem();
-    printf("=== (9/11) vm (M4) ===\n");
+    printf("=== (9/12) vm (M4) ===\n");
     (void)tVm();
-    printf("=== (10/11) shm event 3s ===\n");
+    printf("=== (10/12) mirror (M5) ===\n");
+    (void)tMirror();
+    printf("=== (11/12) shm event 3s ===\n");
     (void)tShm(3);
-    printf("=== (11/11) bench drain 2+2s ===\n");
+    printf("=== (12/12) bench drain 2+2s ===\n");
     (void)tBench(2);
-    printf("=== (x/11) chaos 20s ===\n");
+    printf("=== (x/12) chaos 20s ===\n");
     (void)tChaos(20);
     printf("=== RINGKASAN: pass=%d fail=%d ===\n", g_pass, g_fail);
     rc = (g_fail == 0) ? 0 : 2;
@@ -1180,6 +1313,7 @@ main(int argc, char **argv)
     else if (!strcmp(cmd, "policyrx"))r = tPolicyRx()  ? 0 : 8;
     else if (!strcmp(cmd, "netem"))   r = tNetem()     ? 0 : 10;
     else if (!strcmp(cmd, "vm"))      r = tVm()        ? 0 : 11;
+    else if (!strcmp(cmd, "mirror"))  r = tMirror()    ? 0 : 12;
     else if (!strcmp(cmd, "shm"))     r = tShm(atoi(argv[2]));
     else if (!strcmp(cmd, "bench"))   r = tBench(atoi(argv[2]));
     else if (!strcmp(cmd, "chaos"))   r = tChaos(atoi(argv[2]));
