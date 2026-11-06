@@ -79,6 +79,13 @@
   diam-diam memasang match-any. Smoke guest lengkap PASS di bawah Verifier:
   mode rx, block udp 9999 (kernel ex=en=1 cnt=1), block tcp 10.0.11.5/24 port 80,
   delay 500 ms, drop 50%, rate 256 kbps, mac rule, usage-2, clear/reset bersih.
+- [x] `nlctl load <file>` ✅ 2026-11-06: ruleset multi-baris ke tabel EX (16 cap) —
+  satu baris satu rule dgn format sama (block/allow/delay/drop/rate, nilai aksi
+  di ujung), `#` komentar, baris kosong dilewati, `enabled` union arah semua
+  baris; gagal exit 1 dengan nomor baris yang salah (perintah tak dikenal,
+  dir hilang, nilai aksi tak sah, rule tanpa field match). Guest smoke:
+  5 rule dipasang (kernel `ex(en=3 cnt=5)`), file hilang exit 1, baris jahat
+  exit 1, clear bersih — di bawah Verifier.
 
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.

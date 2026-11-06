@@ -53,7 +53,10 @@ nlctl clear                                  (EX/POLICY/VM kosong)   | reset (cl
 Perintah rule menimpa tabel EX menjadi satu rule (tanpa merge); `ip[/p]` pakai
 prefix /0-/32, `port` N atau N-M, `mac` menimpa match IP jadi dst-MAC. Kode
 keluar: 0 ok, 1 error runtime, 2 salah argumen. Rule tanpa field match
-(proto saja) ditolak.
+(proto saja) ditolak. `nlctl load <file>` memasang ruleset multi-baris — satu
+baris satu rule dalam format yang sama (nilai aksi di ujung baris untuk
+delay/drop/rate) ke tabel EX (16 rule, first-match, baris `#` = komentar);
+baris yang salah berhenti exit 1 dengan nomor baris.
 
 ### Shim ndisapi.dll (kompat legacy filter)
 

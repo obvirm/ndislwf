@@ -13,11 +13,14 @@
  *   nlctl rate   ... <kbps>           satu rule RATE
  *   nlctl clear                       kosongkan EX/POLICY lama + matikan VM
  *   nlctl reset                       clear + mode 0 semua adapter
+ *   nlctl load <file>                 ruleset multi-baris ke tabel EX
  *
  * Form rule: <dir> = tx|rx|txrx; [proto] = any|tcp|udp;
  * [ip[/p]] = a.b.c.d[/prefix] (maksudnya dst; prefix bawaan /32);
  * [port] = N atau N-M (dihiraukan bila proto=any); [mac] = aa:bb:cc:dd:ee:ff
- * (menimpa match ip, dst-mac). Param aksi: -tx / block dst-mac sandingan.
+ * (menimpa match ip, dst-mac). File ruleset: satu baris satu rule, format
+ * "block|allow|delay <dir> [proto] [ip] [port] [mac]" (+ nilai di ujung untuk
+ * delay/drop/rate); '#' = komentar; baris kosong dilewati; first-match.
  *
  * Kode keluar: 0 ok, 1 error, 2 salah pemakaian.
  */
@@ -188,7 +191,8 @@ static int usage(void)
         "  mode <idx> <0|rx|tx|txrx>\n"
         "  block <dir> [proto] [ip[/p]] [port] [mac]\n"
         "  allow <...> | delay <...> <ms> | drop <...> <pct> | rate <...> <kbps>\n"
-        "  clear | reset\n");
+        "  clear | reset\n"
+        "  load <file>\n");
     return NLCTL_USAGE;
 }
 
@@ -314,13 +318,13 @@ static int cmd_mode(int argc, char **argv)
 
 /* Susun satu rule EX dari argumen; param di akhir untuk aksi bernilai. */
 static int build_rule(int argc, char **argv, uint32_t action,
-                      uint32_t action_param, nl_policy_ex_t *ex)
+                      uint32_t action_param, nl_policy_rule_ex_t *ru,
+                      uint32_t *en_out)
 {
-    nl_policy_rule_ex_t *ru = &ex->rules[0];
     int i = 2;
     int has_match = 0;
+    uint32_t en = 0;
 
-    memset(ex, 0, sizeof(*ex));
     memset(ru, 0, sizeof(*ru));
     ru->action       = NL_ACTION_BLOCK;
     ru->r.proto      = NL_PROTO_ANY;
@@ -332,8 +336,7 @@ static int build_rule(int argc, char **argv, uint32_t action,
     ru->rate_kbps    = 0;
 
     if (i >= argc) return -1;
-    if (parse_dir(argv[i], &ex->enabled) != 0) return -1;
-    ex->count = 1;
+    if (parse_dir(argv[i], &en) != 0) return -1;
     i++;
 
     while (i < argc) {
@@ -372,6 +375,7 @@ static int build_rule(int argc, char **argv, uint32_t action,
     case NL_ACTION_DROP_PCT: ru->drop_pct  = action_param; break;
     case NL_ACTION_RATE:     ru->rate_kbps = action_param; break;
     }
+    *en_out = en;
     return 0;
 }
 
@@ -382,7 +386,10 @@ static int cmd_rule(int argc, char **argv, uint32_t action, uint32_t param)
     nl_vm_prog_t vm;
     int r;
 
-    if (build_rule(argc, argv, action, param, &ex) != 0) return usage();
+    memset(&ex, 0, sizeof(ex));
+    if (build_rule(argc, argv, action, param, &ex.rules[0], &ex.enabled) != 0)
+        return usage();
+    ex.count = 1;
     memset(&pol, 0, sizeof(pol));
     memset(&vm, 0, sizeof(vm));
     r = nl_vm_set(&vm);
@@ -399,6 +406,120 @@ static int cmd_rule(int argc, char **argv, uint32_t action, uint32_t param)
            ex.rules[0].r.dst_mac[0], ex.rules[0].r.dst_mac[1],
            ex.rules[0].r.dst_mac[2], ex.rules[0].r.dst_mac[3],
            ex.rules[0].r.dst_mac[4], ex.rules[0].r.dst_mac[5]);
+    return NLCTL_OK;
+}
+
+static int cmd_load(int argc, char **argv)
+{
+    nl_policy_ex_t ex;
+    nl_policy_t pol;
+    nl_vm_prog_t vm;
+    FILE *f;
+    char line[512];
+    int num_rule = 0;
+    int r;
+
+    if (argc != 3) return usage();
+    f = fopen(argv[2], "r");
+    if (f == NULL) {
+        fprintf(stderr, "load: tidak bisa buka %s last=%lu\n", argv[2],
+                (unsigned long)GetLastError());
+        return NLCTL_ERR;
+    }
+    memset(&ex, 0, sizeof(ex));
+    while (fgets(line, sizeof(line), f) != NULL) {
+        char *tok[24];
+        char *shv[26];
+        char *t;
+        char *cut;
+        int ntok = 0;
+        int nrule;
+        int i;
+        uint32_t action = NL_ACTION_BLOCK;
+        uint32_t param = 0;
+        uint32_t en;
+        long num;
+
+        if ((cut = strchr(line, '#')) != NULL) *cut = 0;
+        while ((cut = strpbrk(line, "\r\n")) != NULL) *cut = 0;
+        t = strtok(line, " \t");
+        while (t != NULL && ntok < 24) { tok[ntok++] = t; t = strtok(NULL, " \t"); }
+        if (ntok == 0) continue;
+        if (_stricmp(tok[0], "block") == 0)      action = NL_ACTION_BLOCK;
+        else if (_stricmp(tok[0], "allow") == 0) action = NL_ACTION_ALLOW;
+        else if (_stricmp(tok[0], "delay") == 0) action = NL_ACTION_DELAY;
+        else if (_stricmp(tok[0], "drop") == 0)  action = NL_ACTION_DROP_PCT;
+        else if (_stricmp(tok[0], "rate") == 0)  action = NL_ACTION_RATE;
+        else {
+            fclose(f);
+            fprintf(stderr, "load: baris %d: perintah '%s' tak dikenal\n",
+                    num_rule + 1, tok[0]);
+            return NLCTL_ERR;
+        }
+        if (ntok < 2) {
+            fclose(f);
+            fprintf(stderr, "load: baris %d: tanpa <dir>\n", num_rule + 1);
+            return NLCTL_ERR;
+        }
+        nrule = ntok - 1;
+        if (action == NL_ACTION_DELAY || action == NL_ACTION_DROP_PCT ||
+            action == NL_ACTION_RATE) {
+            if (nrule < 2) {
+                fclose(f);
+                fprintf(stderr, "load: baris %d: tanpa nilai aksi\n", num_rule + 1);
+                return NLCTL_ERR;
+            }
+            num = atol(tok[ntok - 1]);
+            if (action == NL_ACTION_DELAY && (num <= 0 || num > NL_DELAY_MAX_MS)) {
+                fclose(f);
+                fprintf(stderr, "load: baris %d: delay ms tak sah\n", num_rule + 1);
+                return NLCTL_ERR;
+            }
+            if (action == NL_ACTION_DROP_PCT && (num < 0 || num > 100)) {
+                fclose(f);
+                fprintf(stderr, "load: baris %d: drop pct tak sah\n", num_rule + 1);
+                return NLCTL_ERR;
+            }
+            if (action == NL_ACTION_RATE && num <= 0) {
+                fclose(f);
+                fprintf(stderr, "load: baris %d: rate kbps tak sah\n", num_rule + 1);
+                return NLCTL_ERR;
+            }
+            param = (uint32_t)num;
+            nrule--;
+        }
+        nrule++;
+        if (ex.count >= NL_POLICY_MAX_RULES) {
+            fclose(f);
+            fprintf(stderr, "load: lebih dari %u rule\n", (unsigned)NL_POLICY_MAX_RULES);
+            return NLCTL_ERR;
+        }
+        shv[0] = "load";
+        shv[1] = tok[0];
+        for (i = 1; i < nrule; i++) shv[1 + i] = tok[i];
+        if (build_rule(1 + nrule, shv, action, param, &ex.rules[ex.count], &en) != 0) {
+            fclose(f);
+            fprintf(stderr, "load: baris %d: rule tak sah\n", num_rule + 1);
+            return NLCTL_ERR;
+        }
+        ex.enabled |= en;
+        ex.count++;
+        num_rule++;
+    }
+    fclose(f);
+    if (ex.count == 0) {
+        fprintf(stderr, "load: tidak ada rule di %s\n", argv[2]);
+        return NLCTL_ERR;
+    }
+    memset(&pol, 0, sizeof(pol));
+    memset(&vm, 0, sizeof(vm));
+    r = nl_vm_set(&vm);
+    if (r != 0) return die_nl("nl_vm_set", r);
+    r = nl_policy_set(&pol);
+    if (r != 0) return die_nl("nl_policy_set", r);
+    r = nl_policy_ex_set(&ex);
+    if (r != 0) return die_nl("nl_policy_ex_set", r);
+    printf("  load: %d rule dipasang dari %s (first-match)\n", num_rule, argv[2]);
     return NLCTL_OK;
 }
 
@@ -475,6 +596,7 @@ main(int argc, char **argv)
         r = cmd_rule(argc - 1, argv, NL_ACTION_RATE, kbps);
     } else if (_stricmp(argv[1], "clear") == 0) r = cmd_clear(argc, argv);
     else if (_stricmp(argv[1], "reset") == 0)   r = cmd_reset(argc, argv);
+    else if (_stricmp(argv[1], "load") == 0)    r = cmd_load(argc, argv);
     else r = usage();
     nl_close();
     return r;
