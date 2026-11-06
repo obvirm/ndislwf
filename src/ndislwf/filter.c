@@ -1052,6 +1052,26 @@ Return Value:
     // v1: medium tetap NdisMedium802_3; MAC diisi saat frame TX pertama
     pFilter->NlMedium = 0; /* NdisMedium802_3 */
 
+    /* v8 (M8): MAC sejak restart via OID internal (sinkron, PASSIVE).
+       Gagal/belum jalan → NlMac tetap nol, fallback isi dari TX pertama. */
+    {
+        UCHAR Mac[6];
+        ULONG MacLen = 0;
+
+        if (filterDoInternalRequest(pFilter,
+                                    NdisRequestQueryInformation,
+                                    OID_802_3_CURRENT_ADDRESS,
+                                    Mac,
+                                    sizeof(Mac),
+                                    0,
+                                    0,
+                                    &MacLen) == NDIS_STATUS_SUCCESS &&
+            MacLen == 6)
+        {
+            NdisMoveMemory(pFilter->NlMac, Mac, 6);
+        }
+    }
+
     Status = NDIS_STATUS_SUCCESS;
 
 

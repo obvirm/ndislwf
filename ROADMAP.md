@@ -139,6 +139,14 @@
   Verifier: 3 frame × pcap hasil `nlctl pcap` → `to 0` dan `rx`, stats
   `inj` naik persis +6; bukan-pcap exit 1, argumen kurang exit 2.
 
+### M8 Kualitas observability & operabilitas (mulai 2026-11-06)
+- [x] MAC adapter sejak attach ✅ 2026-11-06: `FilterRestart` kini query
+  `OID_802_3_CURRENT_ADDRESS` via `filterDoInternalRequest` (sinkron,
+  PASSIVE) dan mengisi `NlMac` sebelum Running — `enum`/`show` menampilkan
+  MAC asli tanpa harus menunggu capture TX pertama (fallback capture tetap
+  hidup bila OID gagal). Guest (drv `db3f f30f`): `enum` →
+  `ad[0] mac=00-0C-29-7F-40-74`, `ad[1] mac=00-0C-29-7F-40-7E` langsung.
+
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.
 - Semua ioctl METHOD_BUFFERED; codes: 0x89002000 + (fn-0x800)<<2; INJECT_RX=0x8900202C (0x80b), RULEHITS=0x89002030 (0x80c), POLICY_EX=0x89002034 (0x80d), DELAYSTAT=0x89002038 (0x80e), PROGRAM=0x8900203C (0x80f), MIRROR=0x89002040 (0x810), INJECT_TO=0x89002044 (0x811), DEBUG=0x89002050 (0x814, out NL_DEBUG 48 B: `FlowGen` u64 + PolicyEnabled/PolicyCount/ExEnabled/ExCount/VmActive/VmEn/VmCount/MirrorPairs/InjectQueueLen u32 — snapshot state gate `NlGate` untuk observabilitas); next free = 0x89002054 (0x815).
