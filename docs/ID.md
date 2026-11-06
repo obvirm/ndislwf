@@ -277,30 +277,36 @@
   yang ditampilkan, bukan klaim "sudah dicek". Tidak boleh bohong munafik ke
   user. Aturan ini dipasang permanen di `C:\Users\X\.claude\CLAUDE.md`
   (global).
-- **Scrub history** ✅ 2026-11-07: temuan user — kata pihak-ketiga bocor di
-  tree DAN history + pesan commit (ndislwf: legacy filter × banyak, nllegacy;
-  l2split: blok perbandingan /VPN bypass di README, string
-  "Driver nlwf" di ui/main.ts). Pembersihan:
-  1. tree ndislwf — README (shim diringkas jadi "ndisapi.dll compat shim
-     untuk tool legacy"), docs/ID.md (judul ROADMAP → "filosofi dan arah",
-     M1/M5 rewrite), komentar `src/shim/ndisapi.cpp` (typedef
-     `nlwf_ETH_Packet` → `NL_ETH_Packet`), `tests/shimprobe.c`
-     (komentar + `openFn("nlwf")` → `"nlwf"` — arg nama diabai shim,
-     perilaku tetap), komentar RATE di `filter.c`.
+- **Scrub history** ✅ 2026-11-07: temuan user — nama/kata pihak-ketiga
+  bocor di tree DAN history + pesan commit (di kedua repo publik ini:
+  sabagian produk filter paket komersial, nama driver komersial lama, dan
+  proyek sejenis lain; termasuk di README, docs, komentar kode, string UI).
+  Pembersihan:
+  1. tree ndislwf — README shim diringkas jadi "ndisapi.dll compat shim
+     untuk tool legacy"; judul ROADMAP → "filosofi dan arah"; M1/M5 rewrite;
+     pointer typedef di `src/shim/ndisapi.cpp` diganti netral
+     (`..._ETH_Packet` → `NL_ETH_Packet`); `tests/shimprobe.c` komentar +
+     arg nama → `"nlwf"` (arg diabai shim, perilaku tetap); komentar RATE
+     di `filter.c`.
   2. tree l2split — blok perbandingan dihapus dari README, string UI
      dibereskan; satu-satunya commit di-amend (RELEASE.md pindah ke luar
-     repo) → force-push bersih (75786c4).
+     repo) → force-push bersih.
   3. history ndislwf — `git filter-branch -f --tree-filter` (PS 5.1 script
-     di luar repo; mengganti legacy filter→"legacy filter", nlwf→nlwf,
-     nllegacy→nllegacy, /VPN bypass→hapus) atas 40 commit
-     (~44 s), lalu `--msg-filter` (pwsh 7, UTF-8 aman) atas pesan;
-     `refs/original` dihapus; verifikasi `git log -S` + scan `%B` atas
-     `main` dan `--all` pasca-push = 0 temuan. Catatan teknik: path script
-     di filter-branch harus forward slash (`E:/temp/...` — backslash
-     dimakan), scan `--all` sebelum push tetap memuat `origin/main` lama
-     sehingga verifikasi yang sah hanya bisa dilakukan pasca-push.
-  4. commit pembersihan di-tree: tip pasca-rewrite = b0c31c3.
-  Force-push sukses (5d046c7 → b0c31c3).
+     di luar repo; mengganti nama-nama pihak-ketiga di atas jadi kata
+     netral) atas 40 commit (~44 s), lalu `--msg-filter` (pwsh 7, UTF-8
+     aman) atas pesan; `refs/original` dihapus; verifikasi `git log -S` +
+     scan `%B` atas `main` dan `--all` pasca-push = 0 temuan. Catatan
+     teknik: path script di filter-branch harus forward slash (`E:/temp/`
+     — backslash dimakan), scan `--all` sebelum push tetap memuat
+     `origin/main` lama sehingga verifikasi yang sah hanya bisa dilakukan
+     pasca-push.
+  4. tip pasca-rewrite pertama = b0c31c3 → force-push sukses.
+  5. **Kebocoran tellur kemudian**: entri log ini sendiri (tertulis malam
+     2026-11-07) memasukkan kembali nama-nama pihak-ketiga ke tree
+     (commit 45fb414 + 1c90e05) — lingkaran ilat bahwa catatan scrub pun
+     harus suci. Fix final: log ini ditulis tanpa satu pun nama pihak
+     ketiga; seluruh commit penyusun log diasaring ulang via kedua filter
+     sampai kata-kata itu tidak pernah nampak di commit apa pun.
 - **GitHub Release v0.1.0** ✅ 2026-11-07: https://github.com/obvirm/l2split/releases/tag/v0.1.0 —
   asset `l2split_0.1.0_x64-setup.exe` (2,204,980 B, sha256
   34d6fbf9ab727a99b806ea03ecb80b25066232bffafc974da5df3c253576be8c).
