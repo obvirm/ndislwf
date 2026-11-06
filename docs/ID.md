@@ -270,3 +270,35 @@
   MIT, 38 berkas — biner .sys/.cat/inf tidak dirilis: source-first, user
   membangun driver sendiri dari repo ini; tagline cara kerja + README +
   topics rust/ndis/windows-driver/split-tunneling/vpn/network-tools/tauri).
+- **Aturan proyek suci & indie** (2026-11-07, koreksi keras dari user):
+  repo publik TIDAK BOLEH menyebut/membandingkan/menautkan proyek atau brand
+  lain (saingan, shim, "pengganti X") — narasi harus berdiri sendiri (indie).
+  Cross-check = bukti grep yang benar (pola huruf kecil, tanpa flag nyasar)
+  yang ditampilkan, bukan klaim "sudah dicek". Tidak boleh bohong munafik ke
+  user. Aturan ini dipasang permanen di `C:\Users\X\.claude\CLAUDE.md`
+  (global).
+- **Scrub history** ✅ 2026-11-07: temuan user — kata pihak-ketiga bocor di
+  tree DAN history + pesan commit (ndislwf: legacy filter × banyak, nllegacy;
+  l2split: blok perbandingan /VPN bypass di README, string
+  "Driver nlwf" di ui/main.ts). Pembersihan:
+  1. tree ndislwf — README (shim diringkas jadi "ndisapi.dll compat shim
+     untuk tool legacy"), docs/ID.md (judul ROADMAP → "filosofi dan arah",
+     M1/M5 rewrite), komentar `src/shim/ndisapi.cpp` (typedef
+     `nlwf_ETH_Packet` → `NL_ETH_Packet`), `tests/shimprobe.c`
+     (komentar + `openFn("nlwf")` → `"nlwf"` — arg nama diabai shim,
+     perilaku tetap), komentar RATE di `filter.c`.
+  2. tree l2split — blok perbandingan dihapus dari README, string UI
+     dibereskan; satu-satunya commit di-amend (RELEASE.md pindah ke luar
+     repo) → force-push bersih (75786c4).
+  3. history ndislwf — `git filter-branch -f --tree-filter` (PS 5.1 script
+     di luar repo; mengganti legacy filter→"legacy filter", nlwf→nlwf,
+     nllegacy→nllegacy, /VPN bypass→hapus) atas 40 commit
+     (~44 s), lalu `--msg-filter` (pwsh 7, UTF-8 aman) atas pesan;
+     `refs/original` dihapus; verifikasi `git log -S` + scan `%B` atas
+     `main` dan `--all` pasca-push = 0 temuan. Catatan teknik: path script
+     di filter-branch harus forward slash (`E:/temp/...` — backslash
+     dimakan), scan `--all` sebelum push tetap memuat `origin/main` lama
+     sehingga verifikasi yang sah hanya bisa dilakukan pasca-push.
+  4. commit pembersihan di-tree: tip pasca-rewrite = b0c31c3.
+  Force-push sukses (5d046c7 → b0c31c3).
+
