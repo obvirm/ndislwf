@@ -146,6 +146,14 @@
   MAC asli tanpa harus menunggu capture TX pertama (fallback capture tetap
   hidup bila OID gagal). Guest (drv `db3f f30f`): `enum` →
   `ad[0] mac=00-0C-29-7F-40-74`, `ad[1] mac=00-0C-29-7F-40-7E` langsung.
+- [x] `tests/deploy-driver.ps1` ✅ 2026-11-06: satu perintah deploy driver
+  host → guest — copy 3 berkas build (sys/inf/cat, cat dari sub-dir
+  `ndislwf\`) → runProgramInGuest `h_rdrv.cmd` (pola wrapper ps1 yang
+  terbukti M1–M3) → tarik `h_reinstall_out.txt` → verify SHA256 `sys`
+  host vs guest (throw bila beda) → `-Bind` opsional `h_nlbind.cmd` +
+  tarik `nlbind.txt`; `-SkipReinstall` = copy saja. Syarat deploy kini
+  wajib verify hash — mencegah "driver guest = build lama" (akar masalah
+  mirror #3). Copy vmrun asinkron di-dur: `fileExistsInGuest` tiap berkas.
 
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.
