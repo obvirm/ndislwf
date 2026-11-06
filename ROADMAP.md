@@ -118,6 +118,13 @@
   ret block/allow`) → ping 1.1.1.1 **100% loss** saat aktif (kernel
   `vm(a=1 en=1 cnt=4)`), `vm off` → ping pulih 2/2; file mnemonic tak dikenal
   exit 1 dgn nomor baris; `vm off` bersih (`vm a=0 en=0 cnt=0`).
+- [x] `nlctl replay <pcap> rx|to <idx>` ✅ 2026-11-06: replay pcap klasik
+  (hasil pcap-tool lain termasuk export Wireshark) langsung ke driver —
+  header 24 B divalidasi (magic LE `A1B2C3D4`, network=1), record LE
+  ts/incl/orig, frame >1514 dipaksa lewat (hitung skip), `rx` = semua
+  `INJECT_RX`, `to <idx>` = semua `INJECT_TO`. Guest smoke di bawah
+  Verifier: 3 frame × pcap hasil `nlctl pcap` → `to 0` dan `rx`, stats
+  `inj` naik persis +6; bukan-pcap exit 1, argumen kurang exit 2.
 
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.

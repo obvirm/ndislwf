@@ -18,6 +18,7 @@
  *   nlctl send <dump> [rx|to <idx>]   replay dump; arah mengikuti rekaman
  *   nlctl mirror <src> <dst> <dir>    pasang/cabut mirror antar adapter
  *   nlctl pcap <dump>                 konversi dump ke pcap (Wireshark)
+ *   nlctl replay <pcap> rx|to <idx>   replay pcap Wireshark ke driver
  *   nlctl vm <off|file>               pasang program VM mini-BPF dari teks
  *
  * Format program VM: satu insn per baris; '#' = komentar; label ":nama"
@@ -210,6 +211,8 @@ static int usage(void)
         "  send <dump.bin> [rx | to <idx>]\n"
         "  mirror <src> <dst> <tx|rx|txrx|off>\n"
         "  pcap <dump.bin>              konversi dump ke pcap Wireshark\n"
+        "  replay <pcap> rx             kirim frame pcap ke jalur TCP/IP\n"
+        "  replay <pcap> to <idx>       kirim frame pcap ke adapter\n"
         "  vm <off|fmt>                 matikan/pasang program VM (mini-BPF)\n"
         "    fmt: satu insn per baris (# komentar; label \":nama\")\n"
         "    enabled tx|rx|txrx              arah evaluasi (default txrx)\n"
@@ -712,6 +715,92 @@ static int pcw_u32(FILE *f, uint32_t v)
     return (fwrite(b, 1, 4, f) == 4) ? 0 : -1;
 }
 
+static int pcrd_u32(FILE *f, uint32_t *v)
+/* baca u32 little-endian dari file pcap */
+{
+    uint8_t b[4];
+
+    if (fread(b, 1, 4, f) != 4) return -1;
+    *v = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) |
+         ((uint32_t)b[3] << 24);
+    return 0;
+}
+
+static int cmd_replay(int argc, char **argv)
+/* isi pcap klasik, kirim frame ke driver; arah diwajibkan: rx | to <idx> */
+{
+    FILE *f;
+    uint32_t hdr[6];
+    uint32_t n = 0, skip = 0;
+    uint32_t dst = 0xFFFFFFFFu;
+    uint32_t u32, incl, orig;
+    uint8_t fr[1514];
+    int fail = 0;
+
+    if ((argc == 4 && _stricmp(argv[3], "rx") == 0)) {
+        dst = 0x80000000u;
+    } else if (argc == 5 && _stricmp(argv[3], "to") == 0) {
+        dst = need_idx(argv[4]);
+        if (dst == 0xFFFFFFFFu) return usage();
+    } else return usage();
+
+    f = fopen(argv[2], "rb");
+    if (f == NULL) {
+        fprintf(stderr, "replay: tidak bisa buka %s last=%lu\n", argv[2],
+                (unsigned long)GetLastError());
+        return NLCTL_ERR;
+    }
+    if (fread(hdr, 1, 24, f) != 24 || hdr[0] != 0xA1B2C3D4 || hdr[5] != 1) {
+        fclose(f);
+        fprintf(stderr, "replay: %s bukan pcap klasik Ethernet yang sah\n", argv[2]);
+        return NLCTL_ERR;
+    }
+
+    for (;;) {
+        if (pcrd_u32(f, &u32) != 0) break;
+        if (pcrd_u32(f, &u32) != 0 || pcrd_u32(f, &incl) != 0 ||
+            pcrd_u32(f, &orig) != 0) {
+            fprintf(stderr, "replay: header record %u terpotong\n", n + skip + 1);
+            fail = 1;
+            break;
+        }
+        if (incl == 0 || incl > orig || orig > 1514) {
+            skip++;
+            continue;
+        }
+        if (fread(fr, 1, incl, f) != incl) {
+            fprintf(stderr, "replay: %s terpotong di frame ke-%u\n", argv[2], n + 1);
+            fail = 1;
+            break;
+        }
+        if (dst == 0x80000000u) u32 = nl_inject_rx(fr, incl);
+        else                    u32 = nl_inject_to(dst, fr, incl);
+        if (u32 != 0) {
+            fprintf(stderr, "  replay: inject gagal ret=%lu di frame ke-%u\n",
+                    (unsigned long)u32, n + 1);
+            fail = 1;
+            break;
+        }
+        n++;
+    }
+    fclose(f);
+
+    if (fail) {
+        if (n != 0) fprintf(stderr, "replay: %u frame sudah terkirim\n", n);
+        return NLCTL_ERR;
+    }
+    if (n == 0) {
+        fprintf(stderr, "replay: %s nol frame sah (%u record dilewat)\n", argv[2], skip);
+        return NLCTL_ERR;
+    }
+    if (dst == 0x80000000u)
+        printf("  replay: %u frame dari %s -> rx (TCP/IP)\n", n, argv[2]);
+    else
+        printf("  replay: %u frame dari %s -> ad[%u]\n", n, argv[2], dst);
+    if (skip != 0) printf("  replay: %u record dilewat\n", skip);
+    return NLCTL_OK;
+}
+
 static int cmd_pcap(int argc, char **argv)
 {
     nl_cap_hdr_t ch;
@@ -1176,6 +1265,8 @@ main(int argc, char **argv)
     else if (_stricmp(argv[1], "cap") == 0)     r = cmd_cap(argc, argv);
     else if (_stricmp(argv[1], "send") == 0)    r = cmd_send(argc, argv);
     else if (_stricmp(argv[1], "mirror") == 0)  r = cmd_mirror(argc, argv);
+    else if (_stricmp(argv[1], "pcap") == 0)    r = cmd_pcap(argc, argv);
+    else if (_stricmp(argv[1], "replay") == 0)  r = cmd_replay(argc, argv);
     else if (_stricmp(argv[1], "vm") == 0)      r = cmd_vmasm(argc, argv);
     else r = usage();
     nl_close();

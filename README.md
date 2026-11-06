@@ -74,6 +74,8 @@ satu insn per baris (`#` komentar, label `:nama` atau `nama:`),
 nomor insn absolut atau label), `ret a|allow|block|delay <ms>|drop <pct>|
 rate <kbps>`, `enabled tx|rx|txrx`. Program aktif menimpa semua tabel
 (EX/POLICY); `vm off` kembali ke tabel EX. Contoh: `tests/guest/nlvm1.txt`.
+`nlctl replay <pcap> rx|to <idx>` mereplay pcap klasik (termasuk export
+Wireshark) langsung ke driver: `rx` = jalur TCP/IP, `to <idx>` = adapter.
 
 ### Shim ndisapi.dll (kompat legacy filter)
 
