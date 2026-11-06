@@ -44,10 +44,11 @@ CLI tipis untuk operasi live tanpa menulis C:
 nlctl show                                  state kernel + stats + hits + delay + adapter
 nlctl enum | nlctl stats [idx]
 nlctl mode <idx> <0|rx|tx|txrx>
-nlctl block <dir> [proto] [ip[/p]] [port] [mac]     dir = tx|rx|txrx
+nlctl block <dir> [proto] [ip[/p]] [port] [mac]     dir = tx|rx|txrx, proto = any|icmp|tcp|udp
 nlctl delay tx udp 9998 500                 (ms)    | nlctl drop txrx udp 9997 50 (%)
 nlctl rate tx udp 9996 256                  (kbps)  | nlctl allow <...>
-nlctl clear                                  (EX/POLICY/VM kosong)   | reset (clear + mode 0)
+nlctl dlstat                                delay pending/fired + per-rule `rule[i] fired=`
+nlctl clear                                  (EX/POLICY/VM kosong, stats+delay nol)   | reset (clear + mode 0)
 ```
 
 Perintah rule menimpa tabel EX menjadi satu rule (tanpa merge); `ip[/p]` pakai
