@@ -1,8 +1,8 @@
-# ROADMAP — nlwf: filosofi pengganti legacy filter
+# ROADMAP — nlwf: filosofi dan arah
 
 > Prinsip: **kernel = dataplane tipis; kecerdasan & kebijakan tinggal di user-space.**
-> legacy filter = rule statis ber-field-tetap + satu paket per call. Kami tidak meniru bentuknya,
-> kami menggantinya: rule terkompilasi (bytecode), batch zero-copy, aksi netem dinamis,
+> Rule statis ber-field-tetap + satu paket per call bukan arah kami. Yang dianut:
+> rule terkompilasi (bytecode), batch zero-copy, aksi netem dinamis,
 > state per-flow, observability per-rule, dan replay/inject dua arah.
 
 ## Milestone (urut dari paling mudah; tanda ✅ = tuntas)
@@ -10,7 +10,7 @@
 ### M1 ✅ Blok RX + counter hit per rule + inject RX (replay)
 - [x] `NL_POLICY_EN_RX` benar-benar dievaluasi di path RX (`NlPolicyEval(..., NL_POLICY_EN_RX)`) — dulu bit-nya hanya TX.
 - [x] Counter hit per rule (`NlRuleHits[16]`, u64) — ioctl baru `NL_IOCTL_RULEHITS`.
-- [x] `NL_IOCTL_INJECT_RX`: inject frame masuk jalur RX (`NdisFIndicateReceiveNetBufferLists`) — alat replay/test yang legacy filter tidak punya; sekaligus membuat test policy RX deterministik.
+- [x] `NL_IOCTL_INJECT_RX`: inject frame masuk jalur RX (`NdisFIndicateReceiveNetBufferLists`) — alat replay/test; sekaligus membuat test policy RX deterministik.
 - [x] Counter `NlBlockedRx` terpisah; keduanya (TX+RX) masuk stats.Dropped.
 
 ### M2 ✅ Batch drain async (event coalesced)
@@ -52,7 +52,7 @@
   kirim ke instance target persis; delay-replay memakai `Target=NULL` (first-running).
 - [x] Test nlstress `mirror`: inject_to ret+counter, mirror ON → ring dst terisi entri TX,
   mirror OFF → berhenti, self-pair noop ret=0; masuk `full` stage 10/12.
-- [x] `ndisapi.dll` shim ✅ 2026-11-06: kompatiblitas biner API legacy filter (`ndisapi.dll` — nama asli helper user-mode; *driver* legacy filter adalah `nllegacy.sys`, ROADMAP awal salah sebut `nllegacy.dll`) di `src\shim\ndisapi.cpp` — mapping ke nlbridge: `GetTcpipBoundAdaptersInfo→nl_enum`, `Set/GetAdapterMode→nl_set_mode` (TUNNEL diperlakukan LISTEN), `ReadPacket/ReadPackets→nl_read_ring`, `SendPacketToAdapter→nl_inject_to`, `SendPacketToMstcp→nl_inject_rx`. Handle = nl_index+1; handle == 0 invalid. Keterbatasan diimplement: TUNNEL tidak menahan paket di adapter (capture/inject dua arah; tidak memblokir aliran asli). Layout packed terkunci via static_assert: `INTERMEDIATE_BUFFER`=1566, `ETH_REQUEST`=16, `ETH_M_REQUEST`=24, `TCP_AdapterList`=8836, `ADAPTER_MODE`=12. Probe `tests\shimprobe.c` PASS 13/13 di guest (build: `/LD /MT src\shim\ndisapi.cpp`; run: load→enum→mode→ReadPackets 20 pkt→send×2).
+- [x] `ndisapi.dll` shim ✅ 2026-11-06: lapisan kompatibilitas untuk tool user-mode legacy yang memanggil `ndisapi.dll` (ABI membeku, tanpa recompilation) di `src\shim\ndisapi.cpp` — mapping ke nlbridge: `GetTcpipBoundAdaptersInfo→nl_enum`, `Set/GetAdapterMode→nl_set_mode` (TUNNEL diperlakukan LISTEN), `ReadPacket/ReadPackets→nl_read_ring`, `SendPacketToAdapter→nl_inject_to`, `SendPacketToMstcp→nl_inject_rx`. Handle = nl_index+1; handle == 0 invalid. Keterbatasan diimplement: TUNNEL tidak menahan paket di adapter (capture/inject dua arah; tidak memblokir aliran asli). Layout packed terkunci via static_assert: `INTERMEDIATE_BUFFER`=1566, `ETH_REQUEST`=16, `ETH_M_REQUEST`=24, `TCP_AdapterList`=8836, `ADAPTER_MODE`=12. Probe `tests\shimprobe.c` PASS 13/13 di guest (build: `/LD /MT src\shim\ndisapi.cpp`; run: load→enum→mode→ReadPackets 20 pkt→send×2).
 
 ### M6 Hardening produksi
 - Driver Verifier ✅ 2026-11-06 (temuan langsung): standard + NDIS flags (0x2209bb) untuk ndislwf.sys di VM test. Boot normal (DHCP bound via filter) + tFull 65/66 → tersisa `shm: adapter idx`. Urutan hasil:
@@ -195,3 +195,78 @@
   ringan msbuild + artifact unsigned saat itu).
 - Riwayat git dipublikasikan utuh; email di rewrite ke
   `obvirm@users.noreply.github.com` (noreply GitHub).
+
+### Integrasi l2split — VPN bypass per-aplikasi atas NDISLWF (2026-11-06)
+- Fokus pindah ke `E:\project\l2split` (Tauri/Rust): GUI aplikasi VPN bypass
+  per-aplikasi yang **sudah jalan di atas driver sendiri** — `
+  nlclient.rs` membuka `\\.\NDISLWF` dgn ABI v1 mirroring `nlbridge.h`
+  (CTL_CODE formula identik), `engine.rs` = engine live, `nlengine.rs` =
+  varian diagnostik CLI.
+- Model bypass (murni NDIS, tanpa WFP/TDI/hooking): (1) rule kernel POLICY
+  v3 match dst-MAC gateway VPN = BLOCK TX — frame tetap jatuh ke ring TX;
+  (2) engine user-mode parse IPv4 + port sumber, PID via
+  `proclookup.rs` (`GetExtendedTcpTable`, refresh periodik); (3) app
+  whitelist → rewrite dst-MAC ke gateway LAN + `INJECT` (jalur inject
+  kernel `NdisFSendNetBufferLists` langsung — tidak kena FilterSend /
+  rule blok ulang); (4) app lain → inject apa adanya → tetap ke VPN.
+  Temuan penting: batasan "NDIS tak bisa per-app" diatasi karena identitas
+  aplikasi (PID) dihitung di user-space; driver hanya menyediakan
+  blok-by-MAC + ring + inject.
+- GUI sudah wired: `gui.rs::engine_bridge` (detect adapter VPN FROM otomatis,
+  adapter LAN TO dari pilihan user, MAC kedua gateway via ping, spawn
+  thread engine, stats 250 ms, cancel flag; per-app toggle via
+  `Shared::set_app`).
+- **Penambahan baru**: bundle penyebaran `l2split\driver\` —
+  `install.ps1` (nilai default inf/sys/cat satu folder; cek testsigning;
+  netcfg -u + pnputil import + netcfg -l pasang komponen + verifikasi
+  layanan/binding), `uninstall.ps1`, `testsigning.ps1` (on/off bcdedit +
+  deteksi status), `driver.cmd` (menu self-elevate UAC: install/uninstall/
+  testsigning on/off) — siklus tombol testsigning per mesin (ON → reboot →
+  install; OFF → reboot) yang membuat orang lain bisa pakai tanpa
+  sertifikasi produksi. `nlclient.rs::cmd_driver_check` + `gui.rs`
+  (`get_net`, `engine_bridge`) kini menunjuk `driver\driver.cmd` saat
+  device belum terpasang. `cargo check` bersih.
+- **Keputusan nama & positioning l2split** (via /grill-me, 2026-11-07):
+  (1) nama proyek tetap **l2split** — kata kunci industri "split tunneling"
+  persis namakan mekanismenya (per-app split tunneling di layer 2); "direct"
+  = istilah akses/tujuan, "bypass" = istilah pop kurang presisi. Latar
+  istilah yang dikunci dengan user: layer model = ISO 7498-1 (1984),
+  L2 = Data Link (Ethernet/MAC, Metcalfe 1973 di Xerox PARC); nama "L2split"
+  terpercaya tak berpasangan.
+  (2) positioning l2split: **per-app + luas bertahap** (mulai per-app, nanti
+  rule domain/IP); l2split indie — tidak menyebut/membandingkan proyek lain
+  di repo publik (aturan proyek suci).
+  (3) tagline About (terbukti di README.md + Cargo.toml description):
+  *"Pick any app — send it straight out the Ethernet, bypassing the VPN.
+  An alternative split tunneling."*
+  (4) Lisensi l2split: **MIT murni** (bukan dual; Cargo `license = "MIT"`
+  + file LICENSE, copyright "l2split contributors").
+  (5) Rebrand identitas app selesai: `tauri.conf.json` productName/judul
+  jendela = "l2split", identifier `dev.l2split.app`; `Cargo.toml` bin
+  `nlbypass` → `l2split`; autostart reg-key gui.rs "NL Bypass Bridge" →
+  "l2split"; cli.rs usage "nlbypass" → "l2split"; `ui/index.html` semua
+  string "NL Bypass Bridge" → "l2split"; mock
+  `nlbypass_bridge_ui.html` → `l2split_ui.html`. `cargo check` exit 0.
+- **One-click setup wizard** (2026-11-07): `driver\prepare.ps1` (elevated:
+  testsigning ON + daftar `HKLM\...\RunOnce` "l2split-install" →
+  `install.ps1` + reboot otomatis) dan `driver\teardown.ps1` (uninstall +
+  testsigning OFF). Siklus app-resmi: **Yes (UAC) → reboot → terpasang
+  sendiri via RunOnce** — tanpa buka folder/cmd. GUI: wiring command
+  `driver_check` / `driver_setup` / `driver_teardown` di gui.rs (Start-
+  Process powershell -Verb RunAs) + overlay di `ui/src/main.ts`
+  (tambal "Pasang driver" saat `\\.\NDISLWF` gagal dibuka). 
+- **Pelajaran PowerShell 5.1**: method-chain multi-line
+  `if (-not [type]::GetCurrent()\n .IsInRole(...))` = ParserError di PS 5.1
+  (guest); semua skrip driver diubah ke helper `Assert-Admin` one-line.
+- **Guest test end-to-end (R16)** ✅ 2026-11-07: bundel 9 berkas
+  `l2split\driver\` (sys/inf/cat hasil build baru + 5 skrip) → guest
+  `C:\l2split` via vmrun → wrapper `l2inst.cmd` → `install.ps1`` PASS:
+  testsigning Yes, pnputil install success (oem10.inf), layanan NDISLWF
+  **RUNNING**, binding **True** di Ethernet0 + Ethernet1. Lanjut: app CLI
+  `l2split.exe driver` → `driver: TERBUKA, ABI v1.0 (magic ok)`, enum 2
+  adapter (MAC 7F-40-7E/7F-40-74), `stats` passthrough rx 58k/tx 86k, 0
+  dropped. `cargo build --release` exit 0 (bin `l2split.exe`).
+- **Push publik** ✅ 2026-11-07: repo **github.com/obvirm/l2split** (public,
+  MIT, 38 berkas — biner .sys/.cat/inf tidak dirilis: source-first, user
+  membangun driver sendiri dari repo ini; tagline cara kerja + README +
+  topics rust/ndis/windows-driver/split-tunneling/vpn/network-tools/tauri).

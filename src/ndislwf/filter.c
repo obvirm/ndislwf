@@ -4680,7 +4680,7 @@ NlPolicyDecide(
                     else
                     {
                         /* jelang token: drop (bisa juga queue-out, tapi
-                         * legacy filter tidak punya modus ini — drop standar) */
+                         * aksi queue-out belum ada — drop standar) */
                         InterlockedIncrement64(&NlRuleHits[RuleIdx]);
                         InterlockedIncrement64(&NlBlocked);
                         if (Dir == NL_POLICY_EN_RX)
