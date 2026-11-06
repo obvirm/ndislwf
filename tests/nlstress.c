@@ -1083,6 +1083,8 @@ tShm(int seconds)
 
     Sleep(100);
     CHECK("shm: magic", hdr->magic == NL_SHM_MAGIC);
+    printf("      shm: adapter_idx=%u (harap %u)\n",
+           (unsigned)(uint32_t)hdr->adapter_index, (unsigned)g_adapter);
     CHECK("shm: adapter idx", (uint32_t)hdr->adapter_index == g_adapter);
 
     t0 = qps();

@@ -453,7 +453,8 @@ static volatile LONG64     NlFlowGen = 1;
 static volatile LONG64     NlFlowHit;
 static volatile LONG64     NlFlowMiss;
 
-LONG                NlInstanceCounter = -1;  /* ordinal adapter */
+LONG                NlInstanceCounter = -1;  /* ordinal adapter (legacy, tidak
+                                             * lagi dipakai attach) */
 
 NDIS_FILTER_PARTIAL_CHARACTERISTICS DefaultChars = {
 { 0, 0, 0},
@@ -766,11 +767,9 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
         /* refcount: 1 milik list module; lepas oleh FilterDetach.
          * IOCTL (MAP_RING/UNMAP/GET_EVENT) menambah ref pribadi sesaat. */
         pFilter->RefCount = 1;
-        pFilter->NlIdx = (UINT32)InterlockedIncrement((volatile LONG *)&NlInstanceCounter) - 1;
         NlRingInit(pFilter);
         if (pFilter->NlTxRing == NULL || pFilter->NlRxRing == NULL)
         {
-            InterlockedDecrement((volatile LONG *)&NlInstanceCounter);
             FILTER_FREE_MEM(pFilter);
             DEBUGP(DL_WARN, "Failed to allocate per-adapter ring.\n");
             return NDIS_STATUS_RESOURCES;
@@ -798,6 +797,18 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 
         FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
         InsertHeadList(&FilterModuleList, &pFilter->FilterModuleLink);
+        {
+            /* M6: NlIdx harus = ordinal list (ENUM/SET_MODE/MAP_RING/STATS
+             * per-adapter memakai urutan list, bukan counter global — counter
+             * bekas attach gugur menghasilkan indeks yang salah). */
+            ULONG myIdx = 0;
+            PLIST_ENTRY l2;
+            for (l2 = FilterModuleList.Flink; l2 != &pFilter->FilterModuleLink; l2 = l2->Flink)
+            {
+                ++myIdx;
+            }
+            pFilter->NlIdx = myIdx;
+        }
         FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
 
     }
@@ -3465,6 +3476,9 @@ NlInjectComplete(
             KeReleaseSpinLock(&NlInjLock, OldIrql);
             IoFreeMdl(Ent->Mdl);
             NdisFreeMemory(Ent->Buf, NL_FRAME_MAX, 0);
+            /* M6: NBL balik ke pool (leak >0xC4/0x62 pool tracking bila
+             * tidak dibebaskan di sini — hanya NlInjectUninit melakukannya). */
+            NdisFreeNetBufferList(Ent->Nbl);
             NdisFreeMemory(Ent, sizeof(NL_INJ_ENTRY), 0);
             return TRUE;
         }
