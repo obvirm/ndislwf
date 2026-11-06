@@ -177,3 +177,21 @@
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.
 - Semua ioctl METHOD_BUFFERED; codes: 0x89002000 + (fn-0x800)<<2; INJECT_RX=0x8900202C (0x80b), RULEHITS=0x89002030 (0x80c), POLICY_EX=0x89002034 (0x80d), DELAYSTAT=0x89002038 (0x80e), PROGRAM=0x8900203C (0x80f), MIRROR=0x89002040 (0x810), INJECT_TO=0x89002044 (0x811), DEBUG=0x89002050 (0x814, out NL_DEBUG 48 B: `FlowGen` u64 + PolicyEnabled/PolicyCount/ExEnabled/ExCount/VmActive/VmEn/VmCount/MirrorPairs/InjectQueueLen u32 — snapshot state gate `NlGate` untuk observabilitas), DELAYSTAT_EX=0x89002054 (0x815, out NL_DELAY_STAT_EX 144 B); next free = 0x89002058 (0x816).
 - Struct ring entry 1524 B tidak diubah (kunci ABI shm).
+
+### Penyiapan open source (2026-11-06)
+- [x] Lisensi BSD-3-Clause ✅ (menggantikan GPL-2; kompatibel MIT sample
+  ndislwf milik Microsoft — kredit ditaruh di README).
+- [x] Model distribusi: **source-first** — user build sendiri + self-sign
+  (test-signing); sertifikat produksi/attestation jadi OPSIONAL, hanya bila
+  nanti ingin menyediakan installer signed (biaya ~$250-400/tahun).
+- [x] Sanitasi repo: `build_um.cmd` parameterize via `EWDK_ROOT`
+  (default F:\BuildEnv, pemilik repo); `deploy-driver.ps1` wajib param atau
+  env `NL_VMRUN/NL_VMX/NL_GUEST_USER/NL_GUEST_PASS` (tidak ada kredensial
+  di kode); seluruh `tests/guest/` keluar dari git (lab lokal, rule
+  `.gitignore`).
+- [x] README bahasa Inggris + disclaimer legal lengkap; dokumen catatan
+  pengembangan bahasa Indonesia dipindah ke `docs/ID.md`.
+- [ ] CI GitHub Actions: DITUNDA sampai kontributor luar pertama (workflow
+  ringan msbuild + artifact unsigned saat itu).
+- Riwayat git dipublikasikan utuh; email di rewrite ke
+  `obvirm@users.noreply.github.com` (noreply GitHub).

@@ -1,5 +1,4 @@
 # internal notes, not published to the repo
-docs/
 
 # build artifacts
 x64/
@@ -31,5 +30,5 @@ inf/
 # kernel crash dumps dari eksperimen (berat, lokal saja)
 tests/dumps/
 
-# hasil sementara di guest VM (scratch)
-tests/guest/*.txt
+# lab harness untuk VM test (lokal saja, tidak dirilis)
+tests/guest/

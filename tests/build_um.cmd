@@ -1,7 +1,14 @@
 @echo off
 rem Env kompilasi user-mode: SDK + MSVC dibundel EWDK (SetupBuildEnv tidak
 rem memasang INCLUDE karena -winsdk=none). Dipakai: build_um <args-cl>
-call F:\BuildEnv\SetupBuildEnv.cmd amd64 >nul 2>&1
+if not defined EWDK_ROOT set "EWDK_ROOT=F:\BuildEnv"
+if not exist "%EWDK_ROOT%\SetupBuildEnv.cmd" call :err_ewdk
+call "%EWDK_ROOT%\SetupBuildEnv.cmd" amd64 >nul 2>&1
+goto after_ewdk
+:err_ewdk
+echo build_um: EWDK tidak ditemukan di "%EWDK_ROOT%"; set EWDK_ROOT ke folder EWDK 1>&2
+exit /b 2
+:after_ewdk
 setlocal enabledelayedexpansion
 set "KITINC=%WindowsSdkDir%Include\%Version_Number%"
 set "KITLIB=%WindowsSdkDir%Lib\%Version_Number%"

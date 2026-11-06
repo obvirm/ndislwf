@@ -1,8 +1,8 @@
 param(
-    [string]$Vmrun = "D:\App\vmware\vmrun.exe",
-    [string]$Vmx = "D:\vm_macos\windows\Windows 10 x64.vmx",
-    [string]$GuestUser = "X",
-    [string]$GuestPass = "X",
+    [string]$Vmrun,
+    [string]$Vmx,
+    [string]$GuestUser,
+    [string]$GuestPass,
     [string]$ReleaseDir = "E:\project\ndislwf\src\ndislwf\x64\Release",
     [string]$GuestBin = "C:\ndislwf\bin",
     [string]$WrapperReinstall = "C:\ndislwg\h_rdrv.cmd",
@@ -10,6 +10,17 @@ param(
     [switch]$Bind,
     [switch]$SkipReinstall
 )
+
+foreach ($pair in @(
+        @('Vmrun', 'NL_VMRUN'),
+        @('Vmx', 'NL_VMX'),
+        @('GuestUser', 'NL_GUEST_USER'),
+        @('GuestPass', 'NL_GUEST_PASS'))) {
+    if (-not (Get-Variable $pair[0]).Value) { Set-Variable $pair[0] ([Environment]::GetEnvironmentVariable($pair[1])) }
+}
+if (-not $Vmrun -or -not $Vmx -or -not $GuestUser -or -not $GuestPass) {
+    throw "butuh param -Vmrun/-Vmx/-GuestUser/-GuestPass atau env NL_VMRUN/NL_VMX/NL_GUEST_USER/NL_GUEST_PASS"
+}
 
 $ErrorActionPreference = "Stop"
 
