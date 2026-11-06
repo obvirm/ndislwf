@@ -16,6 +16,8 @@
  *   nlctl load <file>                 ruleset multi-baris ke tabel EX
  *   nlctl cap <idx> <dir> <out> [s]   rekam ring ke dump (5 s default)
  *   nlctl send <dump> [rx|to <idx>]   replay dump; arah mengikuti rekaman
+ *   nlctl mirror <src> <dst> <dir>    pasang/cabut mirror antar adapter
+ *   nlctl pcap <dump>                 konversi dump ke pcap (Wireshark)
  *
  * Form rule: <dir> = tx|rx|txrx; [proto] = any|tcp|udp;
  * [ip[/p]] = a.b.c.d[/prefix] (maksudnya dst; prefix bawaan /32);
@@ -196,7 +198,9 @@ static int usage(void)
         "  clear | reset\n"
         "  load <file>\n"
         "  cap <idx> <tx|rx|txrx> <out.bin> [detik=5]\n"
-        "  send <dump.bin> [rx | to <idx>]\n");
+        "  send <dump.bin> [rx | to <idx>]\n"
+        "  mirror <src> <dst> <tx|rx|txrx|off>\n"
+        "  pcap <dump.bin>              konversi dump ke pcap Wireshark\n");
     return NLCTL_USAGE;
 }
 
@@ -656,6 +660,116 @@ static int cmd_load(int argc, char **argv)
     return NLCTL_OK;
 }
 
+static int cmd_mirror(int argc, char **argv)
+{
+    nl_mirror_cfg_t mi;
+    uint32_t src, dst, fl = 0;
+    int r;
+
+    if (argc != 5) return usage();
+    src = need_idx(argv[2]);
+    dst = need_idx(argv[3]);
+    if (src == 0xFFFFFFFFu || dst == 0xFFFFFFFFu) return usage();
+    if (parse_dir(argv[4], &fl) != 0) return usage();
+    if (fl == 0) dst = src;
+    memset(&mi, 0, sizeof(mi));
+    mi.src_index = src;
+    mi.dst_index = dst;
+    mi.flags = fl;
+    r = nl_mirror_set(&mi);
+    if (r != 0) return die_nl("nl_mirror_set", r);
+    printf("  mirror ad[%u] -> ad[%u] arah=%s\n", src, dst, dirstr(fl));
+    return NLCTL_OK;
+}
+
+static int pcw_u32(FILE *f, uint32_t v)
+{
+    uint8_t b[4];
+
+    b[0] = (uint8_t)(v & 0xFF);
+    b[1] = (uint8_t)((v >> 8) & 0xFF);
+    b[2] = (uint8_t)((v >> 16) & 0xFF);
+    b[3] = (uint8_t)((v >> 24) & 0xFF);
+    return (fwrite(b, 1, 4, f) == 4) ? 0 : -1;
+}
+
+static int cmd_pcap(int argc, char **argv)
+{
+    nl_cap_hdr_t ch;
+    nl_cap_frame_t fr;
+    FILE *in, *out;
+    unsigned long n = 0;
+    unsigned long tgt = 0;
+    uint8_t h[24];
+    long long ts = 0;
+    char nm[512];
+
+    if (argc != 3) return usage();
+    in = fopen(argv[2], "rb");
+    if (in == NULL) {
+        fprintf(stderr, "pcap: buka %s gagal last=%lu\n", argv[2],
+                (unsigned long)GetLastError());
+        return NLCTL_ERR;
+    }
+    if (fread(&ch, sizeof(ch), 1, in) != 1 || ch.magic != NL_CAP_MAGIC || ch.ver != 1) {
+        fclose(in);
+        fprintf(stderr, "pcap: %s bukan dump nlctl\n", argv[2]);
+        return NLCTL_ERR;
+    }
+    strcpy(nm, argv[2]);
+    strcat(nm, ".pcap");
+    out = fopen(nm, "wb");
+    if (out == NULL) {
+        fclose(in);
+        fprintf(stderr, "pcap: tulis %s gagal last=%lu\n", nm,
+                (unsigned long)GetLastError());
+        return NLCTL_ERR;
+    }
+    memset(h, 0, sizeof(h));
+    h[0] = 0xD4; h[1] = 0xC3; h[2] = 0xB2; h[3] = 0xA1;   /* LE dari 0xA1B2C3D4 */
+    h[4] = 2; h[5] = 0;                                    /* vmaj 2 (u16) */
+    h[6] = 4; h[7] = 0;                                    /* vmin 4 (u16) */
+    h[16] = 0xFF; h[17] = 0xFF;                            /* snaplen 65535 */
+    h[20] = 1;                                             /* DLT Ethernet */
+    if (fwrite(h, 1, sizeof(h), out) == sizeof(h)) {
+        memset(&fr, 0, sizeof(fr));
+        while (fread(&fr, sizeof(fr), 1, in) == 1) {
+            if (fr.len == 0 || fr.len > NL_FRAME_MAX) break;
+            if (pcw_u32(out, (uint32_t)(ts / 1000)) == 0 &&
+                pcw_u32(out, (uint32_t)(ts % 1000)) == 0 &&
+                pcw_u32(out, (uint32_t)fr.len) == 0 &&
+                pcw_u32(out, (uint32_t)fr.len) == 0 &&
+                fwrite(fr.frame, 1, fr.len, out) == fr.len) {
+                n++;
+                ts++;
+                continue;
+            }
+            fprintf(stderr, "pcap: tulis terputus di frame %lu\n", n);
+            tgt = 1;
+            break;
+        }
+    } else {
+        fprintf(stderr, "pcap: tulis header pcap gagal\n");
+        tgt = 1;
+    }
+    fclose(in);
+    if (fclose(out) != 0) {
+        fprintf(stderr, "pcap: tutup %s gagal\n", nm);
+        return NLCTL_ERR;
+    }
+    if (tgt != 0) {
+        remove(nm);
+        return NLCTL_ERR;
+    }
+    if (n == 0) {
+        fprintf(stderr, "pcap: tak ada frame yang tertulis\n");
+        remove(nm);
+        return NLCTL_ERR;
+    }
+    printf("  pcap: %lu frame dari %s ke %s\n", n, argv[2], nm);
+    return NLCTL_OK;
+}
+
 static int cmd_clear(int argc, char **argv)
 {
     nl_policy_t pol;
@@ -700,6 +814,7 @@ main(int argc, char **argv)
     int r;
 
     if (argc < 2) return usage();
+    if (_stricmp(argv[1], "pcap") == 0) return cmd_pcap(argc, argv);
     if (nl_open() != 0) {
         fprintf(stderr, "nl_open gagal: device \\\\.\\ndislwf tidak terbuka (driver terpasang?) last=%lu\n",
                 (unsigned long)GetLastError());
@@ -732,6 +847,7 @@ main(int argc, char **argv)
     else if (_stricmp(argv[1], "load") == 0)    r = cmd_load(argc, argv);
     else if (_stricmp(argv[1], "cap") == 0)     r = cmd_cap(argc, argv);
     else if (_stricmp(argv[1], "send") == 0)    r = cmd_send(argc, argv);
+    else if (_stricmp(argv[1], "mirror") == 0)  r = cmd_mirror(argc, argv);
     else r = usage();
     nl_close();
     return r;

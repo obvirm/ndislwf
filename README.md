@@ -63,7 +63,9 @@ dump biner (magic `NCLC`, header 16 B + rekaman 1524 B fixed per frame) dan
 kembali menonaktifkan mode. `nlctl send <dump.bin> [rx | to <idx>]`
 mereplay dump: arah tiap frame mengikuti flag rekaman (TX → `INJECT_TO`,
 RX → `INJECT_RX`); `rx` memaksa semuanya ke jalur TCP/IP, `to <idx>` ke
-adapter tertentu.
+adapter tertentu. `nlctl mirror <src> <dst> <tx|rx|txrx|off>` memasang/
+mematikan pasangan mirror overwrite. `nlctl pcap <dump.bin>` mengkonversi
+NCLC → pcap klasik (LE, Ethernet); tidak butuh driver — jalan di host.
 
 ### Shim ndisapi.dll (kompat legacy filter)
 

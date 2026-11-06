@@ -95,8 +95,15 @@
   atau `to <idx>` (semua ke adapter). Guest smoke PASS di bawah Verifier:
   cap 5 s dgn ping latar menangkap 3 frame TX ICMP (file 4,588 B = 16+3×1524),
   send default 3 + `rx` 3, stats `inj` naik persis +6. Format dump = biner
-  fixed-record agar bisa dibaca tanpa seek oleh tool lain; konversi pcap bisa
-  jadi item berikutnya.
+  fixed-record agar bisa dibaca tanpa seek oleh tool lain.
+- [x] `nlctl mirror` + `nlctl pcap` ✅ 2026-11-06: `mirror <src> <dst>
+  <tx|rx|txrx|off>` memasang/mematikan pasangan mirror ioctl MIRROR (off dan
+  self-pair noop ret=0, arah salah → usage exit 2); `pcap <dump.bin>`
+  mengkonversi NCLC → pcap klasik LE (header 24 B: magic `D4 C3 B2 A1`,
+  vmaj=min=2/4, snaplen 65535, network=1 Ethernet; per frame ts berurut,
+  incl=orig=len) — hasil dapat dibaca semua tool pcap standar.`pcap` tidak
+  butuh driver (bypass `nl_open`, konversi off-line jalan di host).
+  Tervalidasi host: 3 rekaman 110/74/110 B, header snaplen=65535.
 
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.
