@@ -61,7 +61,8 @@
   3. Parser minidump POSIX-light di `tests/parsesmall.mdmp.ps1` (header x64: code @0x38, P1..P4 @0x40/48/50/58) — tanpa kd.exe.
 - Fuzz ioctl ✅ 2026-11-06 (tahap 1): `nl_ioctl_raw` (nlbridge, gateway raw tanpa validasi) + mode `fuzz <detik>` di nlstress — 3 thread `fzRaw` (raw ioctl acak: POLICY/EX/VM/MIRROR/INJECT/RING dgn garbage-but-typed buffer), `fzVal` (set valid acak urut policy/ex/vm/mirror), `fzSend` (beban UDP 2 soket) — target: tidak ada BSOD, stats `ret=0`. Bisect kind: `fuzzraw`=1, `fuzz3`=3, `fuzz5`=5, `fuzzval`=6, `fuzz`=7 (semua), + `nl_reset_all()` di cleanup. 6 siklus amplifikasi (fuzz→policy standalone) PASS; debug ioctl `0x89002050` (`nl_debug_state`, `[dbg]` print: gen/pol/ex/vm/mir/dly) terbukti menampilkan state kernel saat set.
 - [x] Verifier symptom pass ✅ 2026-11-06: pasca fix2 (hash `00A3FD65…`), tFull **66/66 PASS** + chaos 10 menit target BSOD-0 **PASS** (mode/policy/map-ua ratusan-ribu siklus, traffic rx 24k/tx 86k, tanpa BSOD, tanpa reboot, unload bersih tanpa crash saat reinstall). Verifier 0x2209bb dibiarkan aktif untuk regresi berikutnya.
-- [ ] Sisa M6: chase race jarang (2× fail pd M5 driver lalu 5× pass; tidak repro pd M6, mungkin sudah hilang bersama tweak M6 atau masih ada — pakai [dbg] saat ketangkep), sertifikat produksi.
+- [x] Chase race jarang ✅ 2026-11-06 (ditutup tanpa repro): 2× fail eksklusif pada driver M5 lama; pasca fix2 tidak pernah muncul lagi — 6 siklus amplifikasi fuzz→policy PASS + chaos 10 menit PASS + **6× tFull 66/66 PASS berurutan di bawah Verifier (0x2209bb)**. Bila muncul lagi cukup pakai `[dbg]` (debug ioctl) + bisect kind.
+- [ ] Sertifikat produksi (.hostname bukan test-sign), WHQL attestation jika perlu — butuh proses nyata di luar repo.
 
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.
