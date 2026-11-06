@@ -52,7 +52,7 @@
   kirim ke instance target persis; delay-replay memakai `Target=NULL` (first-running).
 - [x] Test nlstress `mirror`: inject_to ret+counter, mirror ON → ring dst terisi entri TX,
   mirror OFF → berhenti, self-pair noop ret=0; masuk `full` stage 10/12.
-- [ ] `nllegacy.dll` shim: mirror API legacy filter (AdaptersEnumerateGetNative, PacketsSend, PacketsGet) → panggilan pintas ABI nlbridge — tool lama tanpa recompilasi.
+- [x] `ndisapi.dll` shim ✅ 2026-11-06: kompatiblitas biner API legacy filter (`ndisapi.dll` — nama asli helper user-mode; *driver* legacy filter adalah `nllegacy.sys`, ROADMAP awal salah sebut `nllegacy.dll`) di `src\shim\ndisapi.cpp` — mapping ke nlbridge: `GetTcpipBoundAdaptersInfo→nl_enum`, `Set/GetAdapterMode→nl_set_mode` (TUNNEL diperlakukan LISTEN), `ReadPacket/ReadPackets→nl_read_ring`, `SendPacketToAdapter→nl_inject_to`, `SendPacketToMstcp→nl_inject_rx`. Handle = nl_index+1; handle == 0 invalid. Keterbatasan diimplement: TUNNEL tidak menahan paket di adapter (capture/inject dua arah; tidak memblokir aliran asli). Layout packed terkunci via static_assert: `INTERMEDIATE_BUFFER`=1566, `ETH_REQUEST`=16, `ETH_M_REQUEST`=24, `TCP_AdapterList`=8836, `ADAPTER_MODE`=12. Probe `tests\shimprobe.c` PASS 13/13 di guest (build: `/LD /MT src\shim\ndisapi.cpp`; run: load→enum→mode→ReadPackets 20 pkt→send×2).
 
 ### M6 Hardening produksi
 - Sertifikat produksi (bukan test-sign), WHQL attestation jika perlu.

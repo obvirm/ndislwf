@@ -8,6 +8,7 @@ ring capture/inject, dan kebijakan blok TX.
 ```
 src/ndislwf/      driver kernel (C, WDK/MSVC, x64 Release)
 src/nlbridge/     transport user-mode C ABI (nlbridge.dll)
+src/shim/         ndisapi.dll shim kompat legacy filter (C++)
 src/installer/    install.ps1 / uninstall.ps1 + artifact build
 ```
 
@@ -32,7 +33,35 @@ bcdedit /set testsigning on   (boot ulang)
 ## Kontrol
 
 Buka device `\\.\ndislwf` dan kirim ioctl sesuai bagian kontrak ioctl di bawah.
-Transport user-mode C ABI tersedia di `src/nlbridge` (nlbridge.dll, 14 fungsi).
+Transport user-mode C ABI tersedia di `src/nlbridge` (nlbridge.dll, 23 fungsi).
+
+### Shim ndisapi.dll (kompat legacy filter)
+
+`src/shim/ndisapi.cpp` dibangun menjadi `ndisapi.dll` — nama API helper
+user-mode legacy filter (driver legacy filter sendiri adalah `nllegacy.sys`).
+Tool lama yang memanggil `ndisapi.dll` jalan tanpa recompilasi di atas
+nlbridge:
+
+```
+GetTcpipBoundAdaptersInfo -> nl_enum        (\DEVICE\nl<i>, handle=i+1)
+SetAdapterMode/GetAdapterMode -> nl_set_mode (TUNNEL diperlakukan LISTEN)
+ReadPacket/ReadPackets    -> nl_read_ring   (batch maks 256)
+SendPacketToAdapter       -> nl_inject_to   (arah adapter)
+SendPacketToMstcp         -> nl_inject_rx
+```
+
+Struct packed dikunci static_assert: `INTERMEDIATE_BUFFER` 1566 B,
+`ETH_REQUEST` 16 B, `ETH_M_REQUEST` 24 B, `TCP_AdapterList` 8836 B,
+`ADAPTER_MODE` 12 B. Keterbatasan: mode TUNNEL tidak menahan paket asli di
+adapter (capture/inject dua arah, tidak memblokir aliran), `GetAdapterMode`
+adalah stub. Build:
+```
+tests\build_um.cmd /nologo /W4 /O2 /MT /LD /DWIN32 /D_WINDOWS \
+  src\shim\ndisapi.cpp /Fe:src\shim\ndisapi.dll /Fo:src\shim\ndisapi.obj \
+  /I src\nlbridge src\nlbridge\nlbridge.lib kernel32.lib user32.lib advapi32.lib
+```
+Probe verifikasi: `tests\shimprobe.c` (load dll → enum → mode listen →
+UDP TX → ReadPackets 20 → send adapter + mstcp; PASS 13/13 di guest).
 
 ## Kontrak ioctl
 
