@@ -3,7 +3,7 @@
 An NDIS 6.30 lightweight filter (LWF) driver with a device control plane
 (`\\.\ndislwf`), capture/inject rings, per-rule rule engine (block / delay /
 drop% / rate), a classic BPF-style mini VM, adapter-to-adapter mirroring, and
-a legacy filter-compatible user-mode shim.
+a user-mode shim for legacy `ndisapi.dll` callers.
 
 > **Intended use & legal notice**
 > This is a network test and lab tool: traffic capture, reproduction and
@@ -32,7 +32,7 @@ a legacy filter-compatible user-mode shim.
 - Per-rule hit counters, per-direction queue stats, delay queue stats
   (global and per rule), debug state snapshot ioctl for observability
 - `nlctl` CLI for all of the above without writing C
-- `ndisapi.dll` compatibility shim so legacy legacy filter user-mode tools run
+- `ndisapi.dll` compatibility shim so legacy user-mode tools run
   without recompilation
 
 **Status:** production-internal. Data path and rules engine are exercised by
@@ -45,7 +45,7 @@ there is **no** prebuilt signed binary in this repository.
 ```
 src/ndislwf/      kernel filter driver (C, WDK/MSVC, x64 Release)
 src/nlbridge/     user-mode C-ABI control plane (nlbridge.dll)
-src/shim/         legacy filter ndisapi.dll shim (C++)
+src/shim/         ndisapi.dll compat shim (C++)
 src/installer/    install.ps1 / uninstall.ps1 + build artifacts
 tests/            nlctl CLI + stress harness + user-mode build helper
 docs/ID.md        the full development log/rootmap (indonesian)
@@ -161,12 +161,10 @@ overrides all tables (EX and v3 policy); `vm off` falls back to the EX
 table. `nlctl replay <pcap> rx|to <idx>` replays a classic pcap (including
 Wireshark exports) directly to the driver.
 
-## shim — legacy filter `ndisapi.dll` compatibility
+## shim — legacy `ndisapi.dll` compatibility
 
-`src/shim/ndisapi.cpp` builds into `ndisapi.dll`, the same helper DLL name
-as legacy filter's user-mode API (legacy filter's own kernel driver is
-`nllegacy.sys`). Legacy tools calling `ndisapi.dll` run on this project
-without recompilation:
+`src/shim/ndisapi.cpp` builds into `ndisapi.dll`. Legacy tools calling
+`ndisapi.dll` run on this project without recompilation:
 
 ```
 GetTcpipBoundAdaptersInfo -> nl_enum          (\DEVICE\nl<i>, handle=i+1)
@@ -308,8 +306,6 @@ adapter (redirect — the target instance is referenced for the send).
 - The kernel driver started from Microsoft's `ndislwf` filter sample
   (Windows WDK samples, MIT license); the same attribution is preserved
   upstream in the individual source-file headers.
-- legacy filter names (`ndisapi.dll`, function signatures) belong to their
-  owners; the shim only aims for API compatibility, not binary identity.
 
 ## License
 

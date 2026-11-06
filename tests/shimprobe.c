@@ -1,4 +1,4 @@
-/* shimprobe -- verifikasi shim ndisapi.dll (kompat legacy filter) atas nldriver.
+/* shimprobe -- verifikasi shim ndisapi.dll atas nldriver.
  * Urutan: open -> IsDriverLoaded -> enum -> set mode listen 2 arah ->
  * udpTx anchor -> ReadPackets drain -> SendPacketToAdapter -> ReadPackets lagi.
  */

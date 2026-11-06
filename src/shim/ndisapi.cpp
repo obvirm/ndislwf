@@ -1,5 +1,5 @@
 /*
- * ndisapi.dll shim — kompatibilitas biner tool lama legacy filter.
+ * ndisapi.dll shim — lapisan kompatibilitas untuk tool user-mode legacy.
  *
  * Tool lama memanggil ndisapi.dll; shim ini membeku API yang sama tetapi
  * memetakan semua panggilan ke nlbridge ABI (driver ndislwf):
@@ -9,11 +9,11 @@
  *   SendPacketToAdapter        -> nl_inject_to (target handle)
  *   SendPacketToMstcp          -> nl_inject_rx
  *
- * Keterbatasan vs legacy filter asli: mode TUNNEL tidak menahan paket di
- * jaringan (driver kami tidak memblokir aliran asli di mode capture) — asli
- * tetap berjalan; shim hanya memberikan capture/inject dua arah.
+ * Keterbatasan: mode TUNNEL tidak menahan paket di jaringan (driver kami
+ * tidak memblokir aliran asli di mode capture) — shim hanya memberikan
+ * capture/inject dua arah.
  *
- * Adapter handle = (nl_index + 1) — nilai tak-transparan nghiệp.
+ * Adapter handle = (nl_index + 1) — nilai tak-transparan.
  */
 
 #include <windows.h>
@@ -62,20 +62,20 @@ typedef struct _INTERMEDIATE_BUFFER {
     unsigned char   Buffer[MAX_ETHER_FRAME];
 } INTERMEDIATE_BUFFER, *PINTERMEDIATE_BUFFER;
 
-typedef struct _nlwf_ETH_Packet {
+typedef struct _NL_ETH_Packet {
     PINTERMEDIATE_BUFFER Buffer;
-} nlwf_ETH_Packet, *Pnlwf_ETH_Packet;
+} NL_ETH_Packet, *PNL_ETH_Packet;
 
 typedef struct _ETH_REQUEST {
     HANDLE           hAdapterHandle;
-    nlwf_ETH_Packet EthPacket;
+    NL_ETH_Packet    EthPacket;
 } ETH_REQUEST, *PETH_REQUEST;
 
 typedef struct _ETH_M_REQUEST {
     HANDLE           hAdapterHandle;
     unsigned long    dwPacketsNumber;
     unsigned long    dwPacketsSuccess;
-    nlwf_ETH_Packet EthPacket[1];
+    NL_ETH_Packet    EthPacket[1];
 } ETH_M_REQUEST, *PETH_M_REQUEST;
 
 typedef struct _TCP_AdapterList {
