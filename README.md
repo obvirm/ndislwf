@@ -1,231 +1,317 @@
-# ndislwf -- NDIS 6 LightWeight Filter
+# ndislwf — NDIS 6 lightweight packet filter
 
-Driver filter passthrough NDIS 6.30 dengan kontrol device (`\\.\ndislwf`),
-ring capture/inject, dan kebijakan blok TX.
+An NDIS 6.30 lightweight filter (LWF) driver with a device control plane
+(`\\.\ndislwf`), capture/inject rings, per-rule rule engine (block / delay /
+drop% / rate), a classic BPF-style mini VM, adapter-to-adapter mirroring, and
+a legacy filter-compatible user-mode shim.
 
-## Struktur
+> **Intended use & legal notice**
+> This is a network test and lab tool: traffic capture, reproduction and
+> impairment on machines **you own or are authorized to test**. Using it to
+> intercept, modify, or disrupt traffic that you have no authorization over
+> is not an intended use and may be unlawful in your jurisdiction. The
+> software is provided "as is", without warranty of any kind (see LICENSE);
+> you install and run it at your own risk. No telemetry, no phoning home,
+> nothing leaves the machine except network frames the filter itself handles.
+
+## Features
+
+- Capture on both directions (RX and TX) per minute-bound adapters, via an
+  in-kernel ring or zero-copy shared memory + signaled events
+- Inject raw frames into the Windows stack (RX) or directly to any bound
+  adapter (TX)
+- Result table: 16 first-match rules — direction, protocol (any/icmp/tcp/udp),
+  IP prefix, port range or destination MAC — with actions
+  ALLOW / BLOCK / DELAY (0–60 s, kernel DPC timer queue) / DROP (percentage) /
+  RATE (token bucket, kbps)
+- Classic-cBPF-like packet filter VM (64 registers, A/X + 16 scratch,
+  LD/LDX/ST/STX/ALU/JMP/RET) that can return any action, including netem ones
+- Adapter → adapter mirroring (copies all captured frames of a source
+  adapter into the ring of a target adapter), plus redirect by TX-injection
+  to a specific adapter
+- Per-rule hit counters, per-direction queue stats, delay queue stats
+  (global and per rule), debug state snapshot ioctl for observability
+- `nlctl` CLI for all of the above without writing C
+- `ndisapi.dll` compatibility shim so legacy legacy filter user-mode tools run
+  without recompilation
+
+**Status:** production-internal. Data path and rules engine are exercised by
+end-to-end tests (full = 66/66, 10-minute chaos runs under Driver Verifier,
+break, ioctl fuzzing) — but see "Build & install a signed driver" below:
+there is **no** prebuilt signed binary in this repository.
+
+## Restrictions
 
 ```
-src/ndislwf/      driver kernel (C, WDK/MSVC, x64 Release)
-src/nlbridge/     transport user-mode C ABI (nlbridge.dll)
-src/shim/         ndisapi.dll shim kompat legacy filter (C++)
-src/installer/    install.ps1 / uninstall.ps1 + artifact build
+src/ndislwf/      kernel filter driver (C, WDK/MSVC, x64 Release)
+src/nlbridge/     user-mode C-ABI control plane (nlbridge.dll)
+src/shim/         legacy filter ndisapi.dll shim (C++)
+src/installer/    install.ps1 / uninstall.ps1 + build artifacts
+tests/            nlctl CLI + stress harness + user-mode build helper
+docs/ID.md        the full development log/rootmap (indonesian)
 ```
 
-## Build (Windows, EWDK 10.0.26100)
+`tests/guest/` is a local VM-test harness and intentionally not tracked.
+
+## Build (Windows x64)
+
+Option A — standard WDK (recommended for outsiders):
 
 ```
-F:\BuildEnv\SetupBuildEnv.cmd
-msbuild src\ndislwf\ndislwf.vcxproj /p:Configuration=Release /p:Platform=x64
+1. Install Visual Studio 2022 + Windows Driver Kit 10 (matching your SDK)
+2. msbuild src\ndislwf\ndislwf.vcxproj /p:Configuration=Release /p:Platform=x64
 ```
 
-Artefak: `x64\Release\ndislwf\NDISLWF.sys|ndislwf.inf|ndislwf.cat`.
+Artifacts land in `x64\Release\ndislwf\`: `NDISLWF.sys`, `ndislwf.inf`,
+`ndislwf.cat`.
 
-## Instalasi di VM target
-
-Jalankan `install.ps1` (administrator) di folder artefak; `uninstall.ps1`
-untuk pembongkaran. Windows harus dalam mode test-signing untuk katalog
-test-signed:
-```
-bcdedit /set testsigning on   (boot ulang)
-```
-
-## Kontrol
-
-Buka device `\\.\ndislwf` dan kirim ioctl sesuai bagian kontrak ioctl di bawah.
-Transport user-mode C ABI tersedia di `src/nlbridge` (nlbridge.dll, 23 fungsi).
-
-### nlctl — CLI operasional
-
-`tests/nlctl.c` dibangun menjadi `nlctl.exe` (`/MT`, link `nlbridge.lib`) —
-CLI tipis untuk operasi live tanpa menulis C:
+Option B — Enterprise WDK (what the author uses to build all major artifacts
+in one command, no full SDK install):
 
 ```
-nlctl show                                  state kernel + stats + hits + delay + adapter
+set EWDK_ROOT=<your EWDK folder>     (default F:\BuildEnv)
+tests\build_um.cmd <cl arguments>
+```
+
+`build_um.cmd` sets INCLUDE/LIB from the EWDK toolchain and then requests
+`cl` verbatim, so both user-mode helpers (`nlbridge`, shim, `nlctl` and the
+stress harness) build out of the same command. Example:
+
+```
+tests\build_um.cmd /nologo /W4 /O2 /MT /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS
+  tests\nlctl.c /Fe:tests\nlctl.exe /Fo:tests\nlctl.obj
+  /I src\nlbridge src\nlbridge\nlbridge.lib kernel32.lib advapi32.lib
+```
+
+`nlbridge.dll` itself:
+
+```
+tests\build_um.cmd /nologo /W4 /O2 /MT /DWIN32 /D_WINDOWS /D_CRT_SECURE_NO_WARNINGS
+  /DNLBRIDGE_EXPORTS /LD src\nlbridge\nlbridge.cpp
+  /Fe:src\nlbridge\nlbridge.dll /Fo:src\nlbridge\nlbridge.obj
+```
+
+Build the DLL directly to its final filename — do NOT rename a `/Fe:out`
+afterwards: the PE import table of `nlctl.exe` carries the DLL name at link
+time, and a renamed DLL fails to load silently (0xC0000135).
+
+## Build & install a *signed* driver
+
+`.sys` kernel drivers are rejected by Windows unless the catalog is signed.
+This repo ships **test-signed** artifacts only, which load when:
+```
+bcdedit /set testsigning on      (then reboot)
+```
+
+For self-signing your own build (publishing the driver is not the same as
+signing it):
+
+```
+1. Use "SignTool" with a self-signed certificate you trust:
+   signtool sign /fd sha256 /a /ph /v ndislwf.cat
+2. install that trusted root into the target machine:
+   certmgr /add mycert.cer /s root
+3. bcdedit /set testsigning on + reboot (still needed for anything not
+   production-signed by Microsoft)
+```
+
+Microsoft production signing (attestation via Hardware Dev Center) is only
+needed if you distribute prebuilt binaries to machines with Secure Boot on;
+it requires an EV code-signing certificate (~$250-400/year). For a
+source-first project, self-sign inmedia is the documented route.
+
+## Usage — `nlctl`
+
+```
+nlctl show                                  kernel state + stats + hits + delay + adapters
 nlctl enum | nlctl stats [idx]
 nlctl mode <idx> <0|rx|tx|txrx>
-nlctl block <dir> [proto] [ip[/p]] [port] [mac]     dir = tx|rx|txrx, proto = any|icmp|tcp|udp
-nlctl delay tx udp 9998 500                 (ms)    | nlctl drop txrx udp 9997 50 (%)
-nlctl rate tx udp 9996 256                  (kbps)  | nlctl allow <...>
+nlctl block <dir> [proto] [ip[/p]] [port] [mac]      dir = tx|rx|txrx, proto = any|icmp|tcp|udp
+nlctl delay tx udp 9998 500                 (ms)   | nlctl drop txrx udp 9997 50 (%)
+nlctl rate tx udp 9996 256                  (kbps) | nlctl allow <...>
 nlctl dlstat                                delay pending/fired + per-rule `rule[i] fired=`
-nlctl clear                                  (EX/POLICY/VM kosong, stats+delay nol)   | reset (clear + mode 0)
+nlctl clear                                 (wipes EX/POLICY/VM, stats + delay counters) | reset (clear + mode 0)
 ```
 
-Perintah rule menimpa tabel EX menjadi satu rule (tanpa merge); `ip[/p]` pakai
-prefix /0-/32, `port` N atau N-M, `mac` menimpa match IP jadi dst-MAC. Kode
-keluar: 0 ok, 1 error runtime, 2 salah argumen. Rule tanpa field match
-(proto saja) ditolak. `nlctl load <file>` memasang ruleset multi-baris — satu
-baris satu rule dalam format yang sama (nilai aksi di ujung baris untuk
-delay/drop/rate) ke tabel EX (16 rule, first-match, baris `#` = komentar);
-baris yang salah berhenti exit 1 dengan nomor baris.
+Rule commands overwrite the whole EX table with a single rule (no merge);
+`ip[/p]` takes a /0-/32 prefix, `port` is N or N-M, `mac` switches the match
+to destination MAC. Exit codes: 0 ok, 1 runtime error, 2 bad arguments.
+A rule needs at least one match field besides the protocol (proto-only is
+rejected). `nlctl load <file>` installs a multi-line ruleset — one rule per
+line, same format (action value at end of line for delay/drop/rate) into the
+EX table (16 rules, first-match, `#` comments); a bad line stops the run
+with exit 1 and a line number.
 
-`nlctl cap <idx> <tx|rx|txrx> <out.bin> [detik=5]` merekam frame ring ke
-dump biner (magic `NCLC`, header 16 B + rekaman 1524 B fixed per frame) dan
-kembali menonaktifkan mode. `nlctl send <dump.bin> [rx | to <idx>]`
-mereplay dump: arah tiap frame mengikuti flag rekaman (TX → `INJECT_TO`,
-RX → `INJECT_RX`); `rx` memaksa semuanya ke jalur TCP/IP, `to <idx>` ke
-adapter tertentu. `nlctl mirror <src> <dst> <tx|rx|txrx|off>` memasang/mematikan pasangan
-mirror: copy tiap frame capture adapter sumber masuk ring adapter target
-(sama arah) — terbukti end-to-end guest `mirror 1 0 tx` + ping → 3 frame
-TX asli ad1, 3 copy di ring TX ad0, `stats <idx>` cap_tx naik di dua
-sisi. Duplicate `parse` bit arah `mode`/`cap` kini `NL_MODE_*` (kernel:
-TX=0x2, RX=0x1; cek `parse_mode_dir`) — BUKAN bit policy yang masih
-dipakai perintah rule. `nlctl pcap <dump.bin>` mengkonversi
-NCLC → pcap klasik (LE, Ethernet); tidak butuh driver — jalan di host.
-`nlctl vm <off|file>` memasang/mematikan program VM mini-BPF dari teks:
-satu insn per baris (`#` komentar, label `:nama` atau `nama:`),
+`nlctl cap <idx> <tx|rx|txrx> <out.bin> [sec=5]` records ring frames into a
+dump file (magic `NCLC`, 16-B header + one fixed 1524-B record per frame)
+then switches capture mode back off. `nlctl send <dump.bin> [rx | to <idx>]`
+replays a dump: each frame's direction follows its record flags
+(TX → `INJECT_TO`, RX → `INJECT_RX`); `rx` routes everything into the
+TCP/IP stack, `to <idx>` targets one adapter. `nlctl mirror <src> <dst>
+<tx|rx|txrx|off>` toggles a mirror pair: every frame captured on the source
+adapter is copied into the target adapter's ring (same direction).
+`nlctl pcap <dump.bin>` converts NCLC → classic pcap (LE, Ethernet); no
+driver needed. `nlctl vm <off|file>` installs/removes a mini-BPF program
+from text: one instruction per line (`#` comments, `:label` markers),
 `ldw/ldh/ldb/ldxw/ldxh/ldxb` + `abs|ind|imm <k>`, `ldw len`, `ld*w mem <n>`,
 `st/stx <n>`, `tax/txa`, `alu add|sub|mul|div|or|and|lsh|rsh|neg <k|x>`,
-`jmp eq|gt|ge|set <k|x> <tgt_true> <tgt_false>` / `jmp a <tgt>` (tgt =
-nomor insn absolut atau label), `ret a|allow|block|delay <ms>|drop <pct>|
-rate <kbps>`, `enabled tx|rx|txrx`. Program aktif menimpa semua tabel
-(EX/POLICY); `vm off` kembali ke tabel EX. Contoh: `tests/guest/nlvm1.txt`.
-`nlctl replay <pcap> rx|to <idx>` mereplay pcap klasik (termasuk export
-Wireshark) langsung ke driver: `rx` = jalur TCP/IP, `to <idx>` = adapter.
+`jmp eq|gt|ge|set <k|x> <t1> <t2>` / `jmp a <tgt>`, `ret a|allow|block|
+delay <ms>|drop <pct>|rate <kbps>`, `enabled tx|rx|txrx`. An active program
+overrides all tables (EX and v3 policy); `vm off` falls back to the EX
+table. `nlctl replay <pcap> rx|to <idx>` replays a classic pcap (including
+Wireshark exports) directly to the driver.
 
-### Shim ndisapi.dll (kompat legacy filter)
+## shim — legacy filter `ndisapi.dll` compatibility
 
-`src/shim/ndisapi.cpp` dibangun menjadi `ndisapi.dll` — nama API helper
-user-mode legacy filter (driver legacy filter sendiri adalah `nllegacy.sys`).
-Tool lama yang memanggil `ndisapi.dll` jalan tanpa recompilasi di atas
-nlbridge:
+`src/shim/ndisapi.cpp` builds into `ndisapi.dll`, the same helper DLL name
+as legacy filter's user-mode API (legacy filter's own kernel driver is
+`nllegacy.sys`). Legacy tools calling `ndisapi.dll` run on this project
+without recompilation:
 
 ```
-GetTcpipBoundAdaptersInfo -> nl_enum        (\DEVICE\nl<i>, handle=i+1)
-SetAdapterMode/GetAdapterMode -> nl_set_mode (TUNNEL diperlakukan LISTEN)
-ReadPacket/ReadPackets    -> nl_read_ring   (batch maks 256)
-SendPacketToAdapter       -> nl_inject_to   (arah adapter)
-SendPacketToMstcp         -> nl_inject_rx
+GetTcpipBoundAdaptersInfo -> nl_enum          (\DEVICE\nl<i>, handle=i+1)
+SetAdapterMode/GetAdapterMode -> nl_set_mode  (TUNNEL treated as LISTEN)
+ReadPacket/ReadPackets     -> nl_read_ring   (batch max 256)
+SendPacketToAdapter        -> nl_inject_to   (adapter direction)
+SendPacketToMstcp          -> nl_inject_rx
 ```
 
-Struct packed dikunci static_assert: `INTERMEDIATE_BUFFER` 1566 B,
+Packed structures are pinned by static_assert: `INTERMEDIATE_BUFFER` 1566 B,
 `ETH_REQUEST` 16 B, `ETH_M_REQUEST` 24 B, `TCP_AdapterList` 8836 B,
-`ADAPTER_MODE` 12 B. Keterbatasan: mode TUNNEL tidak menahan paket asli di
-adapter (capture/inject dua arah, tidak memblokir aliran), `GetAdapterMode`
-adalah stub. Build:
-```
-tests\build_um.cmd /nologo /W4 /O2 /MT /LD /DWIN32 /D_WINDOWS \
-  src\shim\ndisapi.cpp /Fe:src\shim\ndisapi.dll /Fo:src\shim\ndisapi.obj \
-  /I src\nlbridge src\nlbridge\nlbridge.lib kernel32.lib user32.lib advapi32.lib
-```
-Probe verifikasi: `tests\shimprobe.c` (load dll → enum → mode listen →
-UDP TX → ReadPackets 20 → send adapter + mstcp; PASS 13/13 di guest).
+`ADAPTER_MODE` 12 B. Limitation: TUNNEL mode does not hold the original
+packet at the adapter (dual-direction capture/inject, does not block the
+flow); `GetAdapterMode` is a stub. Verification probe:
+`tests/shimprobe.c` (dll load → enum → listen mode → UDP TX → ReadPackets
+20 → send adapter + mstcp; PASS 13/13 inside the reference VM).
 
-## Kontrak ioctl
+## ioctl contract
 
-Semua METHOD_BUFFERED, access FILE_ANY_ACCESS, device 0x8900:
+All METHOD_BUFFERED, FILE_ANY_ACCESS, device type 0x8900:
 
 ```
 0x89002000 VERSION
-0x89002004 ENUM_ADPT    (out: [NL_ADAPTER x n], 544 B per entri)
+0x89002004 ENUM_ADPT    (out: [NL_ADAPTER x n], 544 B/entry)
 0x89002008 SET_MODE     (in: NL_MODE = idx+flags; flag 1=rx 2=tx)
-0x8900200C STATS        (out: NL_STATS = 56 B, capture penuh)
-0x89002010 READ_RING    (out: [u32 count][NL_RING_ENTRY x count], 1524 B/entri)
+0x8900200C STATS        (out: NL_STATS = 56 B, full counters)
+0x89002010 READ_RING    (out: [u32 count][NL_RING_ENTRY x count], 1524 B/entry)
 0x89002014 INJECT       (in:  NL_INJECT = len+reserved+data[1514])
-0x89002018 CLEAR        (reset counter capture)
-0x8900201C POLICY       (in:  NL_POLICY = count+enabled+rules[16]); Enabled bitmask: bit0 TX, bit1 RX
-0x89002020 MAP_RING     (in:  NL_MAP_RING = idx+len+UserVa[page-aligned, >= NL_SHM_BYTES]); STATUS_DEVICE_BUSY bila sudah ter-map
-0x89002024 UNMAP_RING   (in:  u32 adapter index; STATUS_ACCESS_DENIED bila milik file handle lain)
-0x89002028 GET_EVENT    (in: u32 idx; out: NL_EVENT = handle; SynchronizationEvent kernel->app; GET ulang mengganti handle aktif)
-0x8900202C INJECT_RX    (in:  NL_INJECT; frame di-indicate ke RX stack; ditolak bila policy RX memblok)
+0x89002018 CLEAR        (clear capture stats — and now also delay queue/counters)
+0x8900201C POLICY       (in:  NL_POLICY = count+enabled+rules[16]; enabled: bit0 TX bit1 RX)
+0x89002020 MAP_RING     (in: NL_MAP_RING = idx+len+UserVa[page-aligned, >= NL_SHM_BYTES]; STATUS_DEVICE_BUSY when already mapped)
+0x89002024 UNMAP_RING   (in: u32 adapter index; STATUS_ACCESS_DENIED when owned by another FILE_OBJECT)
+0x89002028 GET_EVENT    (in: u32 idx; out: NL_EVENT = handle; SynchronizationEvent kernel->app; re-GET swaps the active handle)
+0x8900202C INJECT_RX    (in:  NL_INJECT; frame is indicated into the RX path; rejected if RX policy blocks)
 0x89002030 RULEHITS     (out: NL_RULEHITS = hits[16] u64 per rule + block_tx + block_rx)
-0x89002034 POLICY_EX    (in: NL_POLICY_EX = 712 B; count=0 → kembali ke POLICY lama)
+0x89002034 POLICY_EX    (in: NL_POLICY_EX = 712 B; count=0 → back to legacy POLICY)
 0x89002038 DELAYSTAT    (out: NL_DELAY_STAT = pending + fired u64)
-0x8900203C PROGRAM      (in: NL_VM_PROG = 520 B; count=0 → kembali ke tabel EX/POLICY)
-0x89002040 MIRROR       (in: NL_MIRROR_CFG = src+dst+flags; bit0 TX bit1 RX; 0 = matikan semua)
-0x89002044 INJECT_TO    (in: NL_INJECT_TO = dst+len+data[1514]; TX inject ke adapter tertentu)
-0x89002050 DEBUG        (out: NL_DEBUG = 48 B; snapshot state evaluasi: flow gen + flag tabel aktif)
+0x8900203C PROGRAM      (in: NL_VM_PROG = 520 B; count=0 → back to EX/POLICY tables)
+0x89002040 MIRROR       (in: NL_MIRROR_CFG = src+dst+flags; bit0 TX bit1 RX; 0 = off)
+0x89002044 INJECT_TO    (in: NL_INJECT_TO = dst+len+data[1514]; TX inject to a specific adapter)
+0x89002050 DEBUG        (out: NL_DEBUG = 48 B; snapshot of the evaluation state: flow gen + active-table flags)
+0x89002054 DELAYSTAT_EX (out: NL_DELAY_STAT_EX = 144 B; pending/fired + fired_rule[16])
 ```
 
-### Ring shared-memory (zero-copy)
+Full Struct definitions: `src/ndislwf/filteruser.h` (kernel side) and
+`src/nlbridge/nlbridge.h` (user-mode C).
 
-Buffer user (page-aligned, `NL_SHM_BYTES` = 128 + 2x1024x1524 =
-3 117 184 B; slot 1524 B setelah tail-pad align 4) berisi:
+### Zero-copy shared-memory ring
+
+User buffer (page-aligned, `NL_SHM_BYTES` = 128 + 2x1024x1524 =
+3,117,184 B; 1524-B slots after the head-pad align 4):
 
 ```
-[NL_SHM_HDR 128 B][TX ring 1024 slot][RX ring 1024 slot]
-slot = NL_RING_ENTRY (Len/Flags/Data) — layout sama dengan READ_RING.
+[NL_SHM_HDR 128 B][TX ring 1024 slots][RX ring 1024 slots]
+slot = NL_RING_ENTRY (Len/Flags/Data) — same layout as READ_RING.
 ```
 
-Kernel menulis `TxHead/RxHead`, app menulis `TxTail/RxTail`. Slot penuh
-dihitung drop. Saat mapped, capture tak lagi menyalin ke ring internal;
-`READ_RING` tetap menyalurkan sisa entri ring internal. Mapping dilepas
-otomatis saat `FILE_OBJECT` app ditutup (IRP_MJ_CLOSE), adapter detach,
-atau unload.
+Kernel writes TxHead/RxHead, app reads TxTail/RxTail. Full slots count as a
+drop. While mapped, capture stops copying into the internal ring; READ_RING
+still drains the leftovers of the internal ring. The mapping is released
+automatically when the app FILE_OBJECT is closed (IRP_MJ_CLOSE), on adapter
+detach, or during unload.
 
-Event coalesced (M2): kernel menyinyal event saat ring berubah
-empty→nonempty ATAU tiap 64 entri baru — bukan per paket. Counter
-`TxWake/RxWake` di header menghitung sinyal per arah; consumer instan
-menghasilkan 1 wake/paket (wasEmpty tiap burst), consumer tertinggal
-menghasilkan 1 wake/batch (paket/wake ≈ 60 saat bench 4 socket drift).
+Coalesced events: the kernel signals when the ring changes empty→nonempty
+OR every 64 new entries — not per packet. TxWake/RxWake counters in the
+header accumulate signals per direction; a caught-up consumer generates
+1 wake/packet (wasEmpty every burst), a lagging consumer around
+1 wake/batch (packets/wake ≈ 60 measured during a 4-socket bench).
 
 ### Flow cache
 
-Keputusan policy per-5-tuple TCP/UDP IPv4 di-cache (16384 entri,
-direct-mapped) dan di-invalidate otomatis pada tiap `POLICY` baru
-(generasi).
+Per-5-tuple TCP/UDP IPv4 policy decisions are cached (16384 entries,
+direct-mapped) and auto-invalidated on every new POLICY (generation).
 
-Definisi struct lengkap: `src/ndislwf/filteruser.h` (kernel) dan
-`src/nlbridge/nlbridge.h` (user-mode C).
+### Policy evaluation (v3)
 
-### Evaluasi policy (v3)
+`NlPolicyEval(Data, Len, Dir)` walks a frame in the direction Dir:
+dst-MAC rule → flow cache → IP-rule walker. A matching rule drops the frame
+and bumps `NlRuleHits[i]` + `NlBlocked(Tx|Rx)` — all from one code path.
+`nl_inject_rx()` evaluates the RX policy before indicating, so blocked
+frames never reach the TCP/IP stack.
 
-`NlPolicyEval(Data, Len, Dir)` mengevaluasi frame IPv4 untuk arah Dir
-(`NL_POLICY_EN_TX` / `NL_POLICY_EN_RX`): dst-MAC rule → flow cache →
-IP-rule walker. Rule yang match memblok frame dan menaikkan
-`NlRuleHits[i]` + counter `NlBlocked(Tx|Rx)` — increment di satu titik.
-`nl_inject_rx()` meng-evaluasi policy RX sebelum frame di-indicate, jadi
-frame yang diblokir tidak sampai ke TCP/IP stack.
+### Per-rule netem (v4)
 
-### Netem per rule (v4)
+`POLICY_EX` installs the EX table: each rule carries an action
+(ALLOW/BLOCK/DELAY/DROP_PCT/RATE), delay ms, drop %, rate kbps. With EX
+active, all frames evaluate first-match WITHOUT the flow cache (actions can
+be random or time-dependent); `count=0` switches back to the v3 table.
+DELAY holds frames in a kernel queue (DPC timer, max 4096 items, due
+≤ 60 s) and re-plays them when mature — TX is forwarded as-is, RX is
+re-indicated; queue status is read via DELAYSTAT / DELAYSTAT_EX. DROP_PCT
+uses a per-rule RNG; RATE is a per-rule token bucket (burst = 1 s of rate,
+QPC refill).
 
-`POLICY_EX` memasang tabel EX: tiap rule punya aksi
-(`ALLOW/BLOCK/DELAY/DROP_PCT/RATE`), delay ms, drop %, dan rate Kbps.
-Saat tabel EX aktif, seluruh frame dievaluasi first-match TANPA flow
-cache (aksi bisa acak/waktu-bergantung); `count=0` mengembalikan ke
-tabel v3. Aksi DELAY menahan frame di antrean kernel (DPC timer,
-max 4096 item, due maks 60 s) lalu mainkan ulang saat matang — TX
-dilewatkan apa adanya, RX di-indicate ulang; status antrean dibaca
-via `DELAYSTAT` (pending/fired). DROP_PCT pakai RNG per rule; RATE
-adalah token bucket per rule (burst = 1 s rate, refill QPC).
+### Classic mini-BPF VM (v5)
 
-### VM mini BPF klasik (v5)
+`PROGRAM` installs a VM program (`NL_VM_PROG`, max 64 insns, A/X registers,
+M[16] scratch, classic BPF opcodes: LD/LDX/ST/STX/ALU/JMP/RET/MISC with
+W/H/B sizes and IMM/ABS/IND/MEM/LEN modes). An active program replaces all
+tables; `count=0` returns evaluation to the tables. RET insn = `ACTION |
+(Param << 8)` — so any netem action (BLOCK/DELAY/DROP_PCT/RATE) can be built
+in-machine; DELAY param is ms, DROP_PCT is %, RATE is kbps. Program hits are
+recorded in `NlRuleHits[0]` (slot 0); the program can match any field via
+ABS/IND byte offsets into the frame (MAC, IP header, ports). The `enabled`
+bitmask (NL_POLICY_EN_TX/RX) steers which directions it evaluates.
 
-`PROGRAM` memasang program VM (`NL_VM_PROG`, maks 64 insn, register A/X,
-scratch M[16], bytecode kelas BPF klasik: LD/LDX/ST/STX/ALU/JMP/RET/MISC dgn
-size W/H/B, mode IMM/ABS/IND/MEM/LEN). Program aktif menggantikan SEMUA tabel
-(EX dan policy v3); `count=0` mengembalikan evalasi ke tabel. Ret insn =
-`ACTION | (Param << 8)` — jadi semua aksi netem (BLOCK/DELAY/DROP_PCT/RATE)
-bisa dibangun dari satu program; DELAY param = ms, DROP_PCT = %, RATE = kbps.
-Hit program tercatat di `NlRuleHits[0]` (slot 0); program match field apa pun
-via ABS/IND offset byte frame (MAC, IP header, port). `enabled` bitmask
-(NL_POLICY_EN_TX/RX) menentukan arah yang dievaluasi program.
+### Mirror & redirect (v6)
 
-### Mirror adapter→adapter + redirect (v6/M5)
+`MIRROR` copies frames between adapters: frames captured on the source
+adapter (direction TX and/or RX, per NL_MIRROR_* flags) are also written to
+the target adapter's ring (`NlPushTx/NlPushRx` of the target), including
+target counters/events. Pairs are held per-instance
+(`NlMirrorTx/NlMirrorRx`), the target is reference-counted and released
+automatically when either side detaches (`NlMirrorDetach`). `flags=0` or
+`DstIndex==SrcIndex` removes pairs. `INJECT_TO` sends a frame to a specific
+adapter (redirect — the target instance is referenced for the send).
 
-`MIRROR` memasang salinan frame antar adapter: frame yang dicapture pada
-adapter sumber (arah TX dan/atau RX, per `NL_MIRROR_*` flag) juga ditulis ke
-ring target (`NlPushTx/NlPushRx` target) lengkap dgn counter/event target.
-Pasangan disimpan per-instance (`NlMirrorTx/NlMirrorRx`), target di-refer
-(RefCount) dan dilepas otomatis saat salah satu sisi detach
-(`NlMirrorDetach`). `flags=0` atau `DstIndex==SrcIndex` mematikan pasangan.
-`INJECT_TO` mengirim frame ke adapter tertentu (redirect — instance target
-di-refer selama send).
+### Hardening (M6)
 
-### Hardening (v6/M6)
+- **Debug ioctl** `0x89002050` (`NL_DEBUG`, `nl_debug_state()`): snapshot of
+  evaluation state — FlowGen (u64) + active-table flags/counts (policy
+  en/cnt, ex en/cnt, vm a/en/cnt), mirror pair count, inject/delay queue
+  lengths. The stress harness prints `[dbg]` during policy tests.
+- **ioctl fuzz**: `nl_ioctl_raw()` (nlbridge, raw DeviceIoControl without
+  app-side validation) + nlstress `fuzz <sec>` mode — 3 threads (`fzRaw`
+  random garbage-but-typed raw ioctls, `fzVal` random valid state,
+  `fzSend` 2-socket UDP load); bisect kinds `fuzzraw/fuzz3/fuzz5/fuzzval`,
+  `nl_reset_all()` in cleanup. 6 fuzz→policy amplification cycles PASS.
+- **Driver Verifier** (standard + NDIS/WIFI flags `0x2209bb`) on
+  `ndislwf.sys` caught 2 real bugs — 0xC4/0x62 leak-on-unload
+  (`NlInjectComplete` leaked one NBL per injection; 8182/2950 allocations)
+  and `NlIdx` = 0xFFFFFFFF on first attach (counter init -1). After fixes:
+  tFull **66/66 PASS**, 10-minute chaos BSOD-0 PASS, clean
+  uninstall/reinstall. Minidump x64 parser included:
+  `tests/parsesmall.mdmp.ps1` (BugCheckCode @0x38, P1–P4 @0x40-0x58).
 
-- **Debug ioctl** `0x89002050` (`NL_IOCTL_DEBUG`, nlbridge `nl_debug_state()`):
-  snapshot state evaluasi — `FlowGen` (u64) + flag/jumlah tabel aktif
-  (`policy en/cnt`, `ex en/cnt`, `vm a/en/cnt`), jumlah pasangan mirror, panjang
-  antrean inject/delay. nlstress menampilkan `[dbg]` saat pengujian policy.
-- **Fuzz ioctl**: `nl_ioctl_raw()` (nlbridge, gateway DeviceIoControl mentah
-  tanpa validasi) + mode `fuzz <detik>` nlstress — 3 thread (`fzRaw` raw ioctl
-  garbage-but-typed, `fzVal` state valid acak, `fzSend` beban UDP 2 soket);
-  bisect `fuzzraw/fuzz3/fuzz5/fuzzval`, `nl_reset_all()` di cleanup.
-- **Driver Verifier** (standard + NDIS/WIFI, flag `0x2209bb`) pada
-  `ndislwf.sys`: menangkap 2 bug nyata — 0xC4/0x62 leak-on-unload
-  (`NlInjectComplete` tidak membebaskan NBL; Arg4 8182/2950 alokasi) dan
-  `NlIdx` = 0xFFFFFFFF saat attach pertama (counter init -1; kini NlIdx =
-  ordinal list). Pasca fix: tFull **66/66 PASS** + chaos 10 menit BSOD-0 PASS
-  + uninstall/reinstall bersih. Parser minidump x64 ringan:
-  `tests/parsesmall.mdmp.ps1` (BugCheckCode @0x38, P1..P4 @0x40-0x58).
+## Credits
+
+- The kernel driver started from Microsoft's `ndislwf` filter sample
+  (Windows WDK samples, MIT license); the same attribution is preserved
+  upstream in the individual source-file headers.
+- legacy filter names (`ndisapi.dll`, function signatures) belong to their
+  owners; the shim only aims for API compatibility, not binary identity.
+
+## License
+
+BSD 3-Clause — see `LICENSE`. Contributions are welcome: open an issue or
+send a PR. CI is skipped until the first outside contributor arrives.
