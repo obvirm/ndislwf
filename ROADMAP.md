@@ -64,6 +64,22 @@
 - [x] Chase race jarang ✅ 2026-11-06 (ditutup tanpa repro): 2× fail eksklusif pada driver M5 lama; pasca fix2 tidak pernah muncul lagi — 6 siklus amplifikasi fuzz→policy PASS + chaos 10 menit PASS + **6× tFull 66/66 PASS berurutan di bawah Verifier (0x2209bb)**. Bila muncul lagi cukup pakai `[dbg]` (debug ioctl) + bisect kind.
 - [ ] Sertifikat produksi (.hostname bukan test-sign), WHQL attestation jika perlu — butuh proses nyata di luar repo.
 
+### M7 Operasional harian
+- [x] `nlctl.exe` CLI ✅ 2026-11-06: panggilan tunggal untuk operasi live tanpa harness —
+  `show` (version + kernel state `[dbg]` + stats + rulehits + delaystat + adapter),
+  `enum`, `stats [idx]`, `mode <idx> <0|rx|tx|txrx>`, dan satu-rule-rule EX:
+  `block/allow <dir> [proto] [ip[/p]] [port] [mac]`, `delay ... <ms>`,
+  `drop ... <pct>`, `rate ... <kbps>` (setiap perintah rule MENIMPA tabel EX jadi
+  count=1 — tanpa merge implisit), `clear` (kosongkan EX/POLICY/VM),
+  `reset` (clear + mode 0 semua adapter). Kode keluar 0/1/2; parser IP pakai
+  byte-order paket (sscanf dotted-quad → dword lawanan `*(ULONG*)&Data[off+12]`
+  kernel), prefix /0-/32, port N|N-M, dmac aa:bb:cc:dd:ee:ff timpa match IP.
+  Guard pemakaian tervalidasi di guest: dir/langkah tak lengkap → usage (exit 2),
+  rule tanpa field match (proto saja) ditolak — tidak ada rule kosong yang
+  diam-diam memasang match-any. Smoke guest lengkap PASS di bawah Verifier:
+  mode rx, block udp 9999 (kernel ex=en=1 cnt=1), block tcp 10.0.11.5/24 port 80,
+  delay 500 ms, drop 50%, rate 256 kbps, mac rule, usage-2, clear/reset bersih.
+
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.
 - Semua ioctl METHOD_BUFFERED; codes: 0x89002000 + (fn-0x800)<<2; INJECT_RX=0x8900202C (0x80b), RULEHITS=0x89002030 (0x80c), POLICY_EX=0x89002034 (0x80d), DELAYSTAT=0x89002038 (0x80e), PROGRAM=0x8900203C (0x80f), MIRROR=0x89002040 (0x810), INJECT_TO=0x89002044 (0x811), DEBUG=0x89002050 (0x814, out NL_DEBUG 48 B: `FlowGen` u64 + PolicyEnabled/PolicyCount/ExEnabled/ExCount/VmActive/VmEn/VmCount/MirrorPairs/InjectQueueLen u32 — snapshot state gate `NlGate` untuk observabilitas); next free = 0x89002054 (0x815).
