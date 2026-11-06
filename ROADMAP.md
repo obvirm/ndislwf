@@ -86,6 +86,17 @@
   dir hilang, nilai aksi tak sah, rule tanpa field match). Guest smoke:
   5 rule dipasang (kernel `ex(en=3 cnt=5)`), file hilang exit 1, baris jahat
   exit 1, clear bersih — di bawah Verifier.
+- [x] `nlctl cap`/`send` ✅ 2026-11-06: dump/replay frame operasional —
+  `cap <idx> <tx|rx|txrx> <out.bin> [detik=5]` nyala mode → drain READ_RING
+  (256/batch, poll 50 ms) → file `NCLC` (header 16 B: magic/ver/adapter/pad +
+  rekaman 1524 B fixed per frame: len/flags/frame) → kembalikan mode 0;
+  `send <dump.bin> [rx|to <idx>]` replay — arah per frame mengikuti flag
+  rekaman (TX→`INJECT_TO`, RX→`INJECT_RX`); override `rx` (semua ke TCP/IP)
+  atau `to <idx>` (semua ke adapter). Guest smoke PASS di bawah Verifier:
+  cap 5 s dgn ping latar menangkap 3 frame TX ICMP (file 4,588 B = 16+3×1524),
+  send default 3 + `rx` 3, stats `inj` naik persis +6. Format dump = biner
+  fixed-record agar bisa dibaca tanpa seek oleh tool lain; konversi pcap bisa
+  jadi item berikutnya.
 
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.

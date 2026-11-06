@@ -14,6 +14,8 @@
  *   nlctl clear                       kosongkan EX/POLICY lama + matikan VM
  *   nlctl reset                       clear + mode 0 semua adapter
  *   nlctl load <file>                 ruleset multi-baris ke tabel EX
+ *   nlctl cap <idx> <dir> <out> [s]   rekam ring ke dump (5 s default)
+ *   nlctl send <dump> [rx|to <idx>]   replay dump; arah mengikuti rekaman
  *
  * Form rule: <dir> = tx|rx|txrx; [proto] = any|tcp|udp;
  * [ip[/p]] = a.b.c.d[/prefix] (maksudnya dst; prefix bawaan /32);
@@ -192,7 +194,9 @@ static int usage(void)
         "  block <dir> [proto] [ip[/p]] [port] [mac]\n"
         "  allow <...> | delay <...> <ms> | drop <...> <pct> | rate <...> <kbps>\n"
         "  clear | reset\n"
-        "  load <file>\n");
+        "  load <file>\n"
+        "  cap <idx> <tx|rx|txrx> <out.bin> [detik=5]\n"
+        "  send <dump.bin> [rx | to <idx>]\n");
     return NLCTL_USAGE;
 }
 
@@ -409,6 +413,135 @@ static int cmd_rule(int argc, char **argv, uint32_t action, uint32_t param)
     return NLCTL_OK;
 }
 
+#define NL_CAP_MAGIC 0x4C434C4Eu          /* 'NCLC' */
+
+typedef struct nl_cap_hdr {
+    uint32_t magic;
+    uint32_t ver;
+    uint32_t adapter_index;
+    uint32_t pad;
+} nl_cap_hdr_t;
+
+/* rekam penuh frame tetap 1524 B agar file bisa read-loop tanpa seek */
+typedef struct nl_cap_frame {
+    uint32_t len;
+    uint32_t flags;                 /* NL_RING_* arah asal */
+    uint8_t  frame[NL_FRAME_MAX];
+} nl_cap_frame_t;
+
+C_ASSERT(sizeof(nl_cap_hdr_t) == 16);
+C_ASSERT(sizeof(nl_cap_frame_t) == 1524);
+
+static int cmd_cap(int argc, char **argv)
+{
+    static nl_ring_entry_t buf[256];
+    nl_cap_hdr_t ch;
+    nl_cap_frame_t fr;
+    uint32_t idx, en, secs;
+    unsigned long n = 0;
+    FILE *f;
+    ULONGLONG t0, t1;
+    int got, k;
+    int r;
+
+    if (argc < 5 || argc > 6) return usage();
+    idx = need_idx(argv[2]);
+    if (idx == 0xFFFFFFFFu) return usage();
+    if (parse_dir(argv[3], &en) != 0 || en == 0) return usage();
+    secs = 5;
+    if (argc == 6) {
+        secs = (uint32_t)atol(argv[5]);
+        if (secs == 0 || secs > 3600) return usage();
+    }
+    f = fopen(argv[4], "wb");
+    if (f == NULL) {
+        fprintf(stderr, "cap: buka %s gagal last=%lu\n", argv[4],
+                (unsigned long)GetLastError());
+        return NLCTL_ERR;
+    }
+    memset(&ch, 0, sizeof(ch));
+    ch.magic = NL_CAP_MAGIC;
+    ch.ver = 1;
+    ch.adapter_index = idx;
+    fwrite(&ch, sizeof(ch), 1, f);
+    r = nl_set_mode(idx, en);
+    if (r != 0) { fclose(f); return die_nl("nl_set_mode", r); }
+    t0 = t1 = GetTickCount64();
+    while (t1 - t0 < (ULONGLONG)secs * 1000ULL) {
+        got = 0;
+        r = nl_read_ring(&idx, buf, 256, &got);
+        if (r != 0) { nl_set_mode(idx, 0); fclose(f); return die_nl("nl_read_ring", r); }
+        for (k = 0; k < got; k++) {
+            memset(&fr, 0, sizeof(fr));
+            fr.len = buf[k].len;
+            fr.flags = buf[k].flags;
+            memcpy(fr.frame, buf[k].data, buf[k].len);
+            fwrite(&fr, sizeof(fr), 1, f);
+            n++;
+        }
+        Sleep(50);
+        t1 = GetTickCount64();
+    }
+    if (nl_set_mode(idx, 0) != 0 || fclose(f) != 0) {
+        fprintf(stderr, "cap: kembalikan mode/tutup file gagal\n");
+        return NLCTL_ERR;
+    }
+    printf("  cap: %lu frame ke %s (ad[%u], %us)\n", n, argv[4], idx, (unsigned)secs);
+    return NLCTL_OK;
+}
+
+static int cmd_send(int argc, char **argv)
+{
+    nl_cap_hdr_t ch;
+    nl_cap_frame_t fr;
+    uint32_t idx = 0xFFFFFFFFu, rx_all = 0;
+    FILE *f;
+    unsigned long n = 0;
+    int r;
+
+    if (argc < 3 || argc > 5) return usage();
+    if (argc == 4) {
+        if (_stricmp(argv[3], "rx") != 0) return usage();
+        rx_all = 1;
+    }
+    if (argc == 5) {
+        if (_stricmp(argv[3], "to") != 0) return usage();
+        idx = need_idx(argv[4]);
+        if (idx == 0xFFFFFFFFu) return usage();
+    }
+    f = fopen(argv[2], "rb");
+    if (f == NULL) {
+        fprintf(stderr, "send: buka %s gagal last=%lu\n", argv[2],
+                (unsigned long)GetLastError());
+        return NLCTL_ERR;
+    }
+    memset(&ch, 0, sizeof(ch));
+    if (fread(&ch, sizeof(ch), 1, f) != 1 || ch.magic != NL_CAP_MAGIC || ch.ver != 1) {
+        fclose(f);
+        fprintf(stderr, "send: %s bukan dump nlctl\n", argv[2]);
+        return NLCTL_ERR;
+    }
+    if (argc == 3) idx = ch.adapter_index;
+    memset(&fr, 0, sizeof(fr));
+    while (fread(&fr, sizeof(fr), 1, f) == 1) {
+        if (fr.len == 0 || fr.len > NL_FRAME_MAX) break;
+        if (rx_all || (fr.flags & NL_RING_RX)) {
+            r = nl_inject_rx(fr.frame, fr.len);
+            if (r != 0) { fclose(f); return die_nl("nl_inject_rx", r); }
+        } else {
+            r = nl_inject_to(idx, fr.frame, fr.len);
+            if (r != 0) { fclose(f); return die_nl("nl_inject_to", r); }
+        }
+        n++;
+    }
+    fclose(f);
+    if (rx_all)
+        printf("  send: %lu frame replay dari %s (rx semua)\n", n, argv[2]);
+    else
+        printf("  send: %lu frame replay dari %s (ad[%u])\n", n, argv[2], idx);
+    return NLCTL_OK;
+}
+
 static int cmd_load(int argc, char **argv)
 {
     nl_policy_ex_t ex;
@@ -597,6 +730,8 @@ main(int argc, char **argv)
     } else if (_stricmp(argv[1], "clear") == 0) r = cmd_clear(argc, argv);
     else if (_stricmp(argv[1], "reset") == 0)   r = cmd_reset(argc, argv);
     else if (_stricmp(argv[1], "load") == 0)    r = cmd_load(argc, argv);
+    else if (_stricmp(argv[1], "cap") == 0)     r = cmd_cap(argc, argv);
+    else if (_stricmp(argv[1], "send") == 0)    r = cmd_send(argc, argv);
     else r = usage();
     nl_close();
     return r;

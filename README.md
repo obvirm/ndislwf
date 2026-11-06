@@ -58,6 +58,13 @@ baris satu rule dalam format yang sama (nilai aksi di ujung baris untuk
 delay/drop/rate) ke tabel EX (16 rule, first-match, baris `#` = komentar);
 baris yang salah berhenti exit 1 dengan nomor baris.
 
+`nlctl cap <idx> <tx|rx|txrx> <out.bin> [detik=5]` merekam frame ring ke
+dump biner (magic `NCLC`, header 16 B + rekaman 1524 B fixed per frame) dan
+kembali menonaktifkan mode. `nlctl send <dump.bin> [rx | to <idx>]`
+mereplay dump: arah tiap frame mengikuti flag rekaman (TX → `INJECT_TO`,
+RX → `INJECT_RX`); `rx` memaksa semuanya ke jalur TCP/IP, `to <idx>` ke
+adapter tertentu.
+
 ### Shim ndisapi.dll (kompat legacy filter)
 
 `src/shim/ndisapi.cpp` dibangun menjadi `ndisapi.dll` — nama API helper
