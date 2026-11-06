@@ -154,8 +154,19 @@
   tarik `nlbind.txt`; `-SkipReinstall` = copy saja. Syarat deploy kini
   wajib verify hash — mencegah "driver guest = build lama" (akar masalah
   mirror #3). Copy vmrun asinkron di-dur: `fileExistsInGuest` tiap berkas.
+- [x] DELAYSTAT_EX per-rule ✅ 2026-11-06: ioctl baru `0x89002054` (0x815,
+  `NL_DELAY_STAT_EX` 144 B: pending/fired + `FiredRule[16]`) --
+  kernel: `NlDelayFiredRule[]`, `NL_DELAY_ITEM.Rule`, `NlDelayAdd(+Rule)`;
+  ABI `nl_delay_stat_ex`; CLI `dlstat` menampilkan `rule[i] fired=`. Guest R14
+  (drv `bc960de2`): rule `delay tx icmp /24 700` → dlstat saat antre
+  `pending=1 fired=2 rule[0]=2`, matang `fired=6 rule[0]=6`.
+  Catatan perilaku: `reset`/`clear` TIDAK mereset counter delay (hanya boot) --
+  item lanjutan bila dipakai test jangka panjang; parser nlctl rule memang
+  wajib mempunyai match selain proto (proto-only ditolak -- `has_match`).
+- [x] `NL_PROTO_ICMP` (1) + alias parser `icmp`/`1` ✅ 2026-11-06: define di
+  `filteruser.h` + `nlbridge.h`; `parse_proto` nlctl kini menerima `icmp`.
 
 ## Keputusan ABI yang terkunci
 - `nl_policy_t` 456 B TIDAK diubah (kompat); counter baru hanya via ioctl tambahan.
-- Semua ioctl METHOD_BUFFERED; codes: 0x89002000 + (fn-0x800)<<2; INJECT_RX=0x8900202C (0x80b), RULEHITS=0x89002030 (0x80c), POLICY_EX=0x89002034 (0x80d), DELAYSTAT=0x89002038 (0x80e), PROGRAM=0x8900203C (0x80f), MIRROR=0x89002040 (0x810), INJECT_TO=0x89002044 (0x811), DEBUG=0x89002050 (0x814, out NL_DEBUG 48 B: `FlowGen` u64 + PolicyEnabled/PolicyCount/ExEnabled/ExCount/VmActive/VmEn/VmCount/MirrorPairs/InjectQueueLen u32 — snapshot state gate `NlGate` untuk observabilitas); next free = 0x89002054 (0x815).
+- Semua ioctl METHOD_BUFFERED; codes: 0x89002000 + (fn-0x800)<<2; INJECT_RX=0x8900202C (0x80b), RULEHITS=0x89002030 (0x80c), POLICY_EX=0x89002034 (0x80d), DELAYSTAT=0x89002038 (0x80e), PROGRAM=0x8900203C (0x80f), MIRROR=0x89002040 (0x810), INJECT_TO=0x89002044 (0x811), DEBUG=0x89002050 (0x814, out NL_DEBUG 48 B: `FlowGen` u64 + PolicyEnabled/PolicyCount/ExEnabled/ExCount/VmActive/VmEn/VmCount/MirrorPairs/InjectQueueLen u32 — snapshot state gate `NlGate` untuk observabilitas), DELAYSTAT_EX=0x89002054 (0x815, out NL_DELAY_STAT_EX 144 B); next free = 0x89002058 (0x816).
 - Struct ring entry 1524 B tidak diubah (kunci ABI shm).

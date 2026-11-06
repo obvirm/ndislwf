@@ -115,6 +115,7 @@ static uint32_t pkt_dword(const uint8_t *b)
 static int parse_proto(const char *s, uint32_t *out)
 {
     if (_stricmp(s, "any") == 0 || strcmp(s, "0") == 0)  { *out = NL_PROTO_ANY; return 0; }
+    if (_stricmp(s, "icmp") == 0 || strcmp(s, "1") == 0) { *out = NL_PROTO_ICMP; return 0; }
     if (_stricmp(s, "tcp") == 0 || strcmp(s, "6") == 0)  { *out = NL_PROTO_TCP; return 0; }
     if (_stricmp(s, "udp") == 0 || strcmp(s, "17") == 0) { *out = NL_PROTO_UDP; return 0; }
     return -1;
@@ -224,7 +225,7 @@ static int usage(void)
 {
     fprintf(stderr,
         "pemakaian: nlctl <perintah> [argumen]\n"
-        "  show | enum | stats [idx]\n"
+        "  show | enum | stats [idx] | dlstat\n"
         "  mode <idx> <0|rx|tx|txrx>\n"
         "  block <dir> [proto] [ip[/p]] [port] [mac]\n"
         "  allow <...> | delay <...> <ms> | drop <...> <pct> | rate <...> <kbps>\n"
@@ -310,6 +311,25 @@ static int cmd_show(void)
                g_ad[i].index, (g_ad[i].flags & 1u) ? "up" : "down",
                g_ad[i].mac[0], g_ad[i].mac[1], g_ad[i].mac[2],
                g_ad[i].mac[3], g_ad[i].mac[4], g_ad[i].mac[5]);
+    }
+    return NLCTL_OK;
+}
+
+static int cmd_dlstat(void)
+{
+    nl_delay_stat_ex_t dx;
+    int r, i;
+
+    memset(&dx, 0, sizeof(dx));
+    r = nl_delay_stat_ex(&dx);
+    if (r != 0) return die_nl("nl_delay_stat_ex", r);
+    printf("  delay: pending=%llu fired=%llu\n",
+           (unsigned long long)dx.pending, (unsigned long long)dx.fired);
+    for (i = 0; i < NL_POLICY_MAX_RULES; i++) {
+        if (dx.fired_rule[i] != 0) {
+            printf("  rule[%d] fired=%llu\n", i,
+                   (unsigned long long)dx.fired_rule[i]);
+        }
     }
     return NLCTL_OK;
 }
@@ -1261,6 +1281,7 @@ main(int argc, char **argv)
         return NLCTL_ERR;
     }
     if (_stricmp(argv[1], "show") == 0)        r = cmd_show();
+    else if (_stricmp(argv[1], "dlstat") == 0) r = cmd_dlstat();
     else if (_stricmp(argv[1], "enum") == 0)   r = cmd_enum();
     else if (_stricmp(argv[1], "stats") == 0)  r = cmd_stats(argc, argv);
     else if (_stricmp(argv[1], "mode") == 0)   r = cmd_mode(argc, argv);

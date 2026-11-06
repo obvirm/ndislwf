@@ -86,6 +86,7 @@ typedef struct _NL_DELAY_ITEM {
     ULONG          Kind;
     ULONG          Flags;         /* SendFlags asli untuk KIND_NBL */
     ULONG          Len;
+    ULONG          Rule;          /* index rule (0..15) atau NL_RULE_NONE */
     PVOID          P;             /* NBL untuk KIND_NBL */
     LARGE_INTEGER  Due;
     UCHAR          Data[NL_FRAME_MAX];
@@ -95,6 +96,7 @@ static KSPIN_LOCK             NlDelayLock;
 static LIST_ENTRY             NlDelayList;
 volatile LONG64               NlDelayCount;
 volatile LONG64               NlDelayFired;
+volatile LONG64               NlDelayFiredRule[NL_POLICY_MAX_RULES];
 static KTIMER                 NlDelayTimer;
 static KDPC                   NlDelayDpc;
 static LARGE_INTEGER          NlDelayArmed;      /* due yang sedang dipasang */
@@ -149,6 +151,7 @@ NlDelayAdd(
     IN ULONG Len,
     IN PVOID Nbl,
     IN PUCHAR Bytes,
+    IN ULONG Rule,
     IN ULONG DelayMs
     )
 {
@@ -174,6 +177,7 @@ NlDelayAdd(
     it->Kind = Kind;
     it->Flags = Flags;
     it->Len = Len;
+    it->Rule = Rule;
     it->P = Nbl;
     if (Bytes != NULL && Len != 0)
     {
@@ -283,6 +287,10 @@ NlDelayFire(
     PMS_FILTER pFilter = it->Fil;
 
     InterlockedIncrement64(&NlDelayFired);
+    if (it->Rule < NL_POLICY_MAX_RULES)
+    {
+        InterlockedIncrement64(&NlDelayFiredRule[it->Rule]);
+    }
 
     if (it->Kind == NL_DELAY_KIND_NBL)
     {
@@ -419,6 +427,7 @@ NlDelayInit(
     InitializeListHead(&NlDelayList);
     NlDelayCount = 0;
     NlDelayFired = 0;
+    NdisZeroMemory((PVOID)NlDelayFiredRule, sizeof(NlDelayFiredRule));
     NlDelayArmedValid = FALSE;
     KeInitializeSpinLock(&NlDelayLock);
     KeInitializeTimer(&NlDelayTimer);
@@ -1976,7 +1985,7 @@ Arguments:
                     {
                         /* tahan NBL besar lengkap; saat due di-forward apa adanya
                          * (kualitas keputusan tetap seperti aslinya) */
-                        if (NlDelayAdd(pFilter, NL_DELAY_KIND_NBL, SendFlags, 0, (PVOID)bl, NULL, RDelay))
+                        if (NlDelayAdd(pFilter, NL_DELAY_KIND_NBL, SendFlags, 0, (PVOID)bl, NULL, RIdx, RDelay))
                         {
                             /* NBL tidak masuk chain — tidak di-send sekarang */
                         }
@@ -2335,7 +2344,7 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
                                      * miniport sekarang juga; saat due di-inject ulang
                                      * lewat core indicate (tak menyimpan NBL punya media). */
                                     if (NlDelayAdd(NULL, NL_DELAY_KIND_RX, 0,
-                                                   rblen, NULL, rbdata, RDelay))
+                                                   rblen, NULL, rbdata, RIdx, RDelay))
                                     {
                                         rDelayed = TRUE;
                                     }
@@ -3838,7 +3847,7 @@ NlInjectTx(
     if (Action == NL_ACTION_DELAY)
     {
         InterlockedIncrement64(&NlInj);
-        if (NlDelayAdd(NULL, NL_DELAY_KIND_TX, 0, Len, NULL, Pbuf, DelayMs))
+        if (NlDelayAdd(NULL, NL_DELAY_KIND_TX, 0, Len, NULL, Pbuf, RuleIdx, DelayMs))
         {
             return NDIS_STATUS_SUCCESS;
         }
@@ -4007,7 +4016,7 @@ NlInjectRx(
     }
     if (Action == NL_ACTION_DELAY)
     {
-        if (NlDelayAdd(NULL, NL_DELAY_KIND_RX, 0, Len, NULL, Pbuf, DelayMs))
+        if (NlDelayAdd(NULL, NL_DELAY_KIND_RX, 0, Len, NULL, Pbuf, RuleIdx, DelayMs))
         {
             return NDIS_STATUS_SUCCESS;
         }

@@ -570,6 +570,30 @@ FilterDeviceIoControl(
             break;
         }
 
+        /* v8 (M8): status antrean delay per rule — read-only snapshot. */
+        case NL_IOCTL_DELAYSTAT_EX:
+        {
+            PNL_DELAY_STAT_EX pe = (PNL_DELAY_STAT_EX)Irp->AssociatedIrp.SystemBuffer;
+            ULONG OutLen = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+            ULONG i;
+
+            if (Irp->AssociatedIrp.SystemBuffer == NULL ||
+                OutLen < sizeof(NL_DELAY_STAT_EX))
+            {
+                Status = STATUS_BUFFER_TOO_SMALL;
+                break;
+            }
+            pe->Pending = (ULONG64)NlDelayCount;
+            pe->Fired = NlDelayFired;
+            for (i = 0; i < NL_POLICY_MAX_RULES; i++)
+            {
+                pe->FiredRule[i] = NlDelayFiredRule[i];
+            }
+            InfoLength = sizeof(NL_DELAY_STAT_EX);
+            Status = STATUS_SUCCESS;
+            break;
+        }
+
         case NL_IOCTL_PROGRAM:
         {
             PNL_VM_PROG pv = (PNL_VM_PROG)Irp->AssociatedIrp.SystemBuffer;

@@ -114,6 +114,8 @@ typedef struct _FILTER_WRITE_CONFIG
 
 /* v4 (M3): observability antrean delay (netem) */
 #define NL_IOCTL_DELAYSTAT  NL_CODE(0x80e)
+/* v8 (M8): antrean delay per rule (fired per index rule) */
+#define NL_IOCTL_DELAYSTAT_EX  NL_CODE(0x815)
 
 /* v5 (M4): VM mini BPF klasik — rule terkompilasi */
 #define NL_IOCTL_PROGRAM    NL_CODE(0x80f)
@@ -179,6 +181,7 @@ typedef struct _NL_INJECT {
  * ---------------------------------------------------------------- */
 #define NL_POLICY_MAX_RULES 16
 #define NL_PROTO_ANY        0
+#define NL_PROTO_ICMP       1
 #define NL_PROTO_TCP        6
 #define NL_PROTO_UDP        17
 #define NL_MATCH_SRC        0x1
@@ -251,6 +254,15 @@ typedef struct _NL_DELAY_STAT {
     ULONG64 Pending;
     ULONG64 Fired;
 } NL_DELAY_STAT, *PNL_DELAY_STAT;
+
+/* v8 (M8): status antrean delay per rule — Fired total semua item,
+ * FiredRule[i] hanya item yang di-delay oleh rule i; item tanpa rule
+ * (NL_RULE_NONE) tidak masuk array itu. */
+typedef struct _NL_DELAY_STAT_EX {
+    ULONG64 Pending;
+    ULONG64 Fired;
+    ULONG64 FiredRule[NL_POLICY_MAX_RULES];
+} NL_DELAY_STAT_EX, *PNL_DELAY_STAT_EX;
 
 /* ----------------------------------------------------------------
  * v5 (M4): VM mini BPF klasik

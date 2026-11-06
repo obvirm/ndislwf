@@ -40,6 +40,7 @@ extern "C" {
 #define NL_IOC_MIRROR     0x89002040u  /* fn 0x810 (v6/M5) */
 #define NL_IOC_INJECT_TO  0x89002044u  /* fn 0x811 (v6/M5) */
 #define NL_IOC_DEBUG      0x89002050u  /* fn 0x814 (M6 debug) */
+#define NL_IOC_DELAYSTAT_EX 0x89002054u /* fn 0x815 (v8/M8: delay per rule) */
 
 #define NL_ABI_MAGIC      0x31504C4Eu  /* 'NLP1' */
 #define NL_ABI_VERSION    0x00010000u  /* v1.0 */
@@ -102,6 +103,7 @@ typedef struct nl_inject {
 
 #define NL_POLICY_MAX_RULES 16u
 #define NL_PROTO_ANY        0u
+#define NL_PROTO_ICMP       1u
 #define NL_PROTO_TCP        6u
 #define NL_PROTO_UDP        17u
 #define NL_MATCH_SRC        0x1u
@@ -157,6 +159,13 @@ typedef struct nl_delay_stat {
     uint64_t pending;               /* masih menunggu due */
     uint64_t fired;                 /* sudah matang keluar antrean */
 } nl_delay_stat_t;
+
+/* v8 (M8): delay netem per rule */
+typedef struct nl_delay_stat_ex {
+    uint64_t pending;
+    uint64_t fired;
+    uint64_t fired_rule[NL_POLICY_MAX_RULES];
+} nl_delay_stat_ex_t;
 
 /* --- v5: VM mini BPF klasik (M4) ------------------------------------------ */
 
@@ -324,6 +333,7 @@ NL_API int  nl_policy_ex_set(const nl_policy_ex_t* ex);
 
 /* v4: baca status antrean delay netem. 0 = sukses. */
 NL_API int  nl_delay_stat(nl_delay_stat_t* out);
+NL_API int  nl_delay_stat_ex(nl_delay_stat_ex_t* out);
 
 /* v5: pasang program VM (rule terkompilasi); count=0 mematikan. 0 = sukses. */
 NL_API int  nl_vm_set(const nl_vm_prog_t* prog);

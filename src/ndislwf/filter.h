@@ -121,6 +121,7 @@ extern volatile LONG64     NlBlockedRx;
 extern volatile LONG64     NlRuleHits[NL_POLICY_MAX_RULES];
 /* v4: item yang sudah matang keluar antrean delay netem */
 extern volatile LONG64     NlDelayFired;
+extern volatile LONG64     NlDelayFiredRule[NL_POLICY_MAX_RULES];
 /* v4: item yang masih menunggu due di antrean delay */
 extern volatile LONG64     NlDelayCount;
 

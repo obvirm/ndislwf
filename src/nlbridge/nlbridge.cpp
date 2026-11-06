@@ -246,6 +246,16 @@ NL_API int nl_delay_stat(nl_delay_stat_t* out)
     return nl_ioctl(NL_IOC_DELAYSTAT, NULL, 0, out, (DWORD)sizeof(*out), NULL);
 }
 
+NL_API int nl_delay_stat_ex(nl_delay_stat_ex_t* out)
+{
+    static_assert(sizeof(nl_delay_stat_ex_t) ==
+                  16 + NL_POLICY_MAX_RULES * 8,
+                  "layout nl_delay_stat_ex salah");
+    if (out == NULL) { return ERROR_INVALID_PARAMETER; }
+    memset(out, 0, sizeof(*out));
+    return nl_ioctl(NL_IOC_DELAYSTAT_EX, NULL, 0, out, (DWORD)sizeof(*out), NULL);
+}
+
 NL_API int nl_vm_set(const nl_vm_prog_t* prog)
 {
     static_assert(sizeof(nl_vm_insn_t) == 8, "layout nl_vm_insn harus 8");
