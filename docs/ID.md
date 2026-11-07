@@ -320,3 +320,42 @@
   di release): setup → SmartScreen Run anyway → wizard in-app → UAC Yes →
   reboot otomatis (testsigning ON + RunOnce) → driver terpasang sendiri.
 
+
+- **Alih driver l2split → installer paket (v0.1.1)** ✅ 2026-11-07: keputusan
+  user — driver kustom hasil build sendiri tertahan masalah sistemik: hanya
+  bisa load saat test signing aktif, sedangkan Secure Boot memblokirnya, jadi
+  mayoritas user nyata tidak akan bisa memakainya tanpa mengubah BIOS.
+  Jalan keluar final: pakai driver packet-filter yang **tertanda WHQL**
+  (bukti diverifikasi sendiri: `Get-AuthenticodeSignature` atas berkas .sys
+  hasil ekstraksi MSI terisolasi → Signer = Microsoft Windows Hardware
+  Compatibility Publisher) dan gratis, sehingga load di Windows 10/11 apa
+  adanya tanpa testsigning, tanpa mati Secure Boot, tanpa reboot.
+  Berikut port-nya:
+  - crate Rust untuk bicara driver, langsung DeviceIoControl ke device
+    (nama device = konstanta ABI fungsional, tidak bisa diganti);
+  - `src/ndclient.rs` baru: `NdisDevice` (open/adapters/capture_tx/clear/
+    set_event/read_batch/send_batch), `SniAdapter` (nama friendly + MAC +
+    handle), filter kernel = static filter dst-MAC gateway VPN arah TX,
+    action REDIRECT — semantik disimpulkan dari contoh resmi crate
+    (passthru/packthru/filter): hanya frame yang match yang ditahan ke
+    user-mode, sisanya lewat kernel tanpa disentuh user-mode;
+  - `src/engine.rs` ditulis ulang: satu thread pembaca per adapter
+    (event Win32 per adapter → baca batch 256 buffer) → keputusan per
+    frame (owner exe via tabel port sumber) → whitelist: tulis ulang
+    dst-MAC ke gateway LAN + inject ke adapter LAN; sisanya: inject apa
+    adanya ke adapter asal. Pijakan API dikonfirmasi dari source crate di
+    tempat terisolasi (push/packthru menata request dulu baru kirim begitu
+    saja — tidak ada `send_batch` di bawah level request);
+  - `helpers.rs` dibuat generik lewat trait `AdapterInfo` (implementasi
+    NlAdapter kustom + adapter paket) agar CLI lama tidak pecah;
+  - wizard baru: MSI driver **dibungkus sebagai resource** di dalam
+    setup.exe (`driver/ndis.msi`, nama netral), instalasi silent
+    `msiexec /i … /qn` + UAC sekali, verifikasi device setelahnya —
+    testsigning/reboot/RunOnce dikabur;
+  - 9 berkas driver lama (.sys/inf/cat + skrip) dihapus dari tree;
+  - versi naik 0.1.1, release https://github.com/obvirm/l2split/releases/tag/v0.1.1
+    (aset `l2split_0.1.1_x64-setup.exe` 2.41 MiB, terverifikasi `7z l`
+    memuat `driver\ndis.msi`).
+- **Kejujuran status pengujian**: sampai momen ini l2split **belum** pernah
+  di stress test / benchmark / alur one-click end-to-end di mesin asli —
+  semua klaim fungsi masih level kode, bukan level hasil uji.
