@@ -429,3 +429,19 @@
   re-capture (frame yang sudah pernah diproses tidak boleh disuntik ulang
   ke adapter yang masih punya rule match); (3) gen trafik pakai taktik
   bounded rate, bukan loop panas tanpa jeda.
+- **Bundel NSIS v0.1.1 diperbarui** ✅ 2026-11-07: aset GitHub Release
+  v0.1.1 diganti dengan bundel berisi binary hasil fix (ResetEvent, urutan
+  filter→event→TUNNEL, lookup basis waktu, CLI nd/ndcap/ndrun). Hash sha256
+  baru: `2E33426DCED6622485189F57D551E3F84EC1BF25E8AE95828A0E657CD2388AB4`
+  (2.42 MiB; `7z l` memverifikasi `l2split.exe` + `driver\ndis.msi`).
+- **Resep menjalankan build di kondisi jaringan bermasalah** (dipicu
+  insiden NAT-host): tauri-cli 2.12.4 nyangkut selamanya di "Looking up
+  installed tauri packages" (langkah itu mengakses npm, dan cargo ikut
+  nyangkut begitu feature baru diminta). Resep yang berhasil:
+  (1) hapus floating deps — pin `@tauri-apps/api` 2.12.4, `lucide` 1.66.0
+  di `ui/package.json`; (2) taruh `npm.cmd` dummy (`exit /b 0`)
+  paling depan PATH supaya langkah lookup tidak benar-benar menunggu jaringan;
+  (3) `CARGO_TARGET_DIR` ke folder bersih — target dir lama ternyata racun
+  (cargo diam tanpa rustc, offline juga macet; ke folder bersih langsung
+  jalan); (4) `cargo build --offline` dijalankan sendiri dulu sampai
+  tuntas sebelum memanggil `tauri build`.
