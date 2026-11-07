@@ -359,3 +359,73 @@
 - **Kejujuran status pengujian**: sampai momen ini l2split **belum** pernah
   di stress test / benchmark / alur one-click end-to-end di mesin asli —
   semua klaim fungsi masih level kode, bukan level hasil uji.
+
+## 2026-11-07 — Uji end-to-end engine di guest (paket driver)
+
+- **Bug pertama ketemu: manual-reset event tidak pernah di-reset.** `ndcap`
+  pertama menghasilkan log 774 KB berisi ribuan `queue=0` — begitu event
+  tersinyal sekali, `WaitForSingleObject` langsung lolos selamanya → loop
+  spin. Fix: helper `reset_event()` di `helpers.rs`, dipanggil setelah
+  drain + `restore_mode` di akhir reader. Referensi benar: `packthru.rs`
+  memanggil `ResetEvent` tiap putaran.
+- **0x80070057 pada batch pertama read** muncul di semua run sekali
+  ("the parameter is incorrect"); dibiarkan sebagai warning (tidak fatal,
+  batch lanjutannya normal). Draft catatan: kemungkinan buffer/alignment
+  batch pertama; belum diakari.
+- **Urutan wajib yang benar** (dipelajari dari `filter.rs` resmi):
+  pasang tabel filter → `set_packet_event` per adapter →
+  `set_adapter_mode(TUNNEL)` per adapter → loop wait/drain/reinject →
+  `ResetEvent` → saat berhenti: restore mode + reset tabel filter.
+- **REDIRECT butuh TUNNEL mode.** Tabel filter REDIRECT dst-MAC saja (tanpa
+  TUNNEL per-adapter) menghasilkan antrean bisu (0 frame) walau rule jelas
+  match. Setelah TUNNEL dinyalakan, frame mengalir. `src_port`, `owner`
+  dst. — dan tnc/ping tetap hidup pas REDIRECT pkt.
+- **`--reset` event sebelum loop: `tunnel_tx` juga dipanggil sebelum bufs.**
+- **lookup refresh pindah ke basis waktu** (2.5 s), bukan basis jumlah frame
+  — port ephemeral koneksi pendek mati cepat; per-N-frame telat.
+- **Topologi guest dual-NIC kunci temuan:** kedua NIC e1000e di subnet
+  sama (VMnet8 204.x). Windows memilih adapter egress unicast per-koneksi
+  (mayoritas ke eth0) — itulah sebab semua capture lama di eth1 tidak
+  melihat ICMP/TCP unicast: bukan LWF salah, target salah. Broadcast/
+  multicast keluar via kedua adapter.
+- **Alat CLI baru di l2split:** `nd` (cek driver + adapter), `ndcap
+  [--verbose --raw --alltx --tunnel --mac X]` — verbose pakai `frame_info`
+  (parse ethertype/IP/proto/ports), `ndrun` = engine end-to-end tanpa GUI.
+  Wrapper uji: `trirun4.cmd` + `looptcp.ps1` (PS inline di .cmd selalu
+  rusak quoting → logika PS WAJIB file .ps1 terpisah).
+- **HASIL end-to-end pertama yang bawahannya benar:** `ndrun --from
+  ethernet0 --to ethernet1 --app powershell.exe --secs 34` →
+  `VERDICT: total=156 bypassed=20 pass_through=136`, sementara loop TCP
+  `powershell → 1.1.1.1:80` sukses **46/46** koneksi di jalur bypass
+  (SYN ditulis ulang dst-MAC → inject adapter LAN → sampai tujuan).
+  pass_through 136 = re-inject frame ARP/multicast/koneksi lain.
+- **pktmon tidak ada** di guest Win 10 build 10240 — observability di
+  guest itu pakai verbose LWF sendiri, bukan pktmon.
+- **Kejujuran status:** path TX-bypass terbukti fungsi; RX path belum
+  ditest, stress/bench pps/CPU belum dilakukan, dan installer bundel NSIS
+  v0.1.1 masih berisi binary LAMA (tanpa fix ini) — perlu rebuild sebelum
+  dipakai orang lain.
+
+## 2026-11-07 — INSIDEN: uji stress guest bocor sampai internet HOST terputus
+
+- Aku menyalakan stress.cmd di guest (engine + UDP generator) — hasil aneh:
+  `total=3108835 bypassed=3108819 pass_through=16` dalam 48 dtk (~65k
+  frame/dtk) padahal generator sendiri lapor `sent=0 err=0`. Dampaknya
+  **internet di mesin HOST jadi hilang** — bocor via NAT VMware ke jaringan
+  fisik. User berhentikan; semua uji dihentikan dan TIDAK diulangi kecuali
+  atas izin.
+- **Teori penyebab (belum terbukti, jujur masih teori):** (a) re-inject
+  passthrough ke adapter asal memakai dst-MAC yang tidak berubah — frame itu
+  MATCH lagi terhadap rule capture (dst-MAC gateway FROM) → tertangkap lagi
+  → di-inject lagi → lingkaran amplifikasi antara kernel-queue dan
+  user-mode; (b) kemungkinan dua berkas engine jalan bersamaan (instance
+  lama minname dari wrapper sebelumnya belum pasti mati) saling
+  menyuntikkan frame. Keduanya menginfra frame ke VMnet8 tanpa batas
+  dan NAT host-nya jenuh/jebol.
+- **Larangan tetap dari user:** uji jaringan BOLEH di VMware (itu tempatnya
+  memang), tapi TIDAK BOLEH di mesin natif, dan uji guest TIDAK BOLEH bocor
+  sampai ranah host. Sebelum uji guest berikutnya wajib: (1) pastikan tidak
+  ada instance engine lama masih hidup; (2) tenggelamkan lingkaran
+  re-capture (frame yang sudah pernah diproses tidak boleh disuntik ulang
+  ke adapter yang masih punya rule match); (3) gen trafik pakai taktik
+  bounded rate, bukan loop panas tanpa jeda.
